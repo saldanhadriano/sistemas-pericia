@@ -3,13 +3,61 @@ import pandas as pd
 import sqlite3
 from datetime import datetime, timedelta
 import calendar
+import plotly.express as px
+import plotly.graph_objects as go
 
 # Configuração da página
 st.set_page_config(
     page_title="Sistema de Gestão de Perícias",
     page_icon="📋",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
+
+# Versão do sistema
+VERSAO_SISTEMA = "v3.0"
+
+# CSS personalizado para melhorar o design
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 2.5rem;
+        font-weight: bold;
+        color: #1f77b4;
+        margin-bottom: 0.5rem;
+    }
+    .metric-card {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 20px;
+        border-radius: 10px;
+        color: white;
+        text-align: center;
+    }
+    .version-badge {
+        background-color: #28a745;
+        color: white;
+        padding: 5px 10px;
+        border-radius: 5px;
+        font-size: 0.8rem;
+        font-weight: bold;
+    }
+    .stExpander {
+        background-color: #f8f9fa;
+        border-radius: 10px;
+        border: 1px solid #dee2e6;
+    }
+    .calendar-day {
+        padding: 10px;
+        border-radius: 5px;
+        text-align: center;
+        margin: 2px;
+    }
+    .calendar-has-event {
+        background-color: #ffc107;
+        font-weight: bold;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 # Funções do Banco de Dados
 def init_db():
@@ -36,7 +84,7 @@ def init_db():
         )
     ''')
     
-    # Tabela de entrevistas - Adicionar coluna status se não existir
+    # Tabela de entrevistas
     c.execute('''
         CREATE TABLE IF NOT EXISTS entrevistas (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -133,6 +181,20 @@ def obter_proximas_entrevistas():
     conn.close()
     return df
 
+def obter_entrevistas_mes(ano, mes):
+    """Obtém entrevistas de um mês específico"""
+    conn = sqlite3.connect('pericias.db')
+    query = '''
+        SELECT e.*, p.num_processo, p.classe_acao, p.vara, p.status as status_pericia
+        FROM entrevistas e
+        JOIN pericias p ON e.pericia_id = p.id
+        WHERE strftime('%Y', e.data_entrevista) = ? 
+        AND strftime('%m', e.data_entrevista) = ?
+    '''
+    df = pd.read_sql_query(query, conn, params=(str(ano), str(mes).zfill(2)))
+    conn.close()
+    return df
+
 def excluir_pericia(pericia_id):
     """Exclui uma perícia"""
     conn = sqlite3.connect('pericias.db')
@@ -149,12 +211,19 @@ def atualizar_status_entrevista(entrevista_id, novo_status):
     conn.commit()
     conn.close()
 
+def atualizar_status_pericia(pericia_id, novo_status):
+    """Atualiza o status de uma perícia"""
+    conn = sqlite3.connect('pericias.db')
+    c = conn.cursor()
+    c.execute("UPDATE pericias SET status = ? WHERE id = ?", (novo_status, pericia_id))
+    conn.commit()
+    conn.close()
+
 def finalizar_pericia(pericia_id, data_entrega, valor_recebido):
     """Finaliza uma perícia atualizando data de entrega e valor recebido"""
     conn = sqlite3.connect('pericias.db')
     c = conn.cursor()
     
-    # Determinar o novo status baseado no valor recebido
     if valor_recebido > 0:
         novo_status = "Recebida"
     else:
@@ -210,30 +279,64 @@ def get_status_color(status):
     }
     return cores.get(status, "#808080")
 
-def atualizar_status_pericia(pericia_id, novo_status):
-    """Atualiza o status de uma perícia"""
+def obter_dados_financeiros_mes():
+    """Obtém dados financeiros agrupados por mês"""
     conn = sqlite3.connect('pericias.db')
-    c = conn.cursor()
-    c.execute("UPDATE pericias SET status = ? WHERE id = ?", (novo_status, pericia_id))
-    conn.commit()
+    query = '''
+        SELECT 
+            strftime('%Y-%m', data_nomeacao) as mes_ano,
+            SUM(valor_previsto) as total_previsto,
+            SUM(valor_recebido) as total_recebido,
+            SUM(valor_previsto - valor_recebido) as total_pendente
+        FROM pericias
+        GROUP BY strftime('%Y-%m', data_nomeacao)
+        ORDER BY mes_ano
+    '''
+    df = pd.read_sql_query(query, conn)
     conn.close()
+    return df
+
+def obter_contagem_status():
+    """Obtém contagem de perícias por status"""
+    conn = sqlite3.connect('pericias.db')
+    query = '''
+        SELECT status, COUNT(*) as quantidade
+        FROM pericias
+        GROUP BY status
+    '''
+    df = pd.read_sql_query(query, conn)
+    conn.close()
+    return df
 
 # Inicializar banco de dados
 init_db()
 
 # Interface Principal
-st.title("📋 Sistema de Gestão de Perícias")
+col_title, col_version = st.columns([6, 1])
+with col_title:
+    st.markdown('<p class="main-header">📋 Sistema de Gestão de Perícias</p>', unsafe_allow_html=True)
+with col_version:
+    st.markdown(f'<span class="version-badge">{VERSAO_SISTEMA}</span>', unsafe_allow_html=True)
+
 st.markdown("---")
 
 # Menu lateral
+st.sidebar.image("https://via.placeholder.com/300x80/1f77b4/ffffff?text=Perícias+Manager", use_container_width=True)
+st.sidebar.markdown("### 📌 Menu Principal")
+
 menu = st.sidebar.selectbox(
-    "Menu",
-    ["📝 Cadastrar Perícia", "📊 Listar Perícias", "📅 Próximas Entrevistas", "💰 Resumo Financeiro"]
+    "Navegação",
+    ["📝 Cadastrar Perícia", "📊 Listar Perícias", "📅 Próximas Entrevistas", "💰 Resumo Financeiro"],
+    label_visibility="collapsed"
 )
+
+st.sidebar.markdown("---")
+st.sidebar.markdown(f"**Versão:** {VERSAO_SISTEMA}")
+st.sidebar.markdown("**Desenvolvido com** ❤️")
 
 # CADASTRAR PERÍCIA
 if menu == "📝 Cadastrar Perícia":
-    st.header("Cadastrar Nova Perícia")
+    st.header("📝 Cadastrar Nova Perícia")
     
     with st.form("form_pericia"):
         col1, col2, col3 = st.columns(3)
@@ -258,7 +361,7 @@ if menu == "📝 Cadastrar Perícia":
         
         observacoes = st.text_area("Observações")
         
-        submit = st.form_submit_button("✅ Cadastrar Perícia", use_container_width=True)
+        submit = st.form_submit_button("✅ Cadastrar Perícia", use_container_width=True, type="primary")
         
         if submit:
             if not num_processo or not classe_acao:
@@ -275,7 +378,7 @@ if menu == "📝 Cadastrar Perícia":
 
 # LISTAR PERÍCIAS
 elif menu == "📊 Listar Perícias":
-    st.header("Perícias Cadastradas")
+    st.header("📊 Perícias Cadastradas")
     
     # Filtros
     col1, col2, col3 = st.columns(3)
@@ -284,8 +387,7 @@ elif menu == "📊 Listar Perícias":
         filtro_status = st.selectbox("Filtrar por Status", ["Todos", "Aberto", "Em Revisão", "Entregue", "Recebida"])
     
     with col2:
-        df_temp = listar_pericias()
-        varas_unicas = ["Todas"] + ["1VF", "2VF", "3VF"]
+        varas_unicas = ["Todas", "1VF", "2VF", "3VF"]
         filtro_vara = st.selectbox("Filtrar por Vara", varas_unicas)
     
     with col3:
@@ -305,12 +407,8 @@ elif menu == "📊 Listar Perícias":
         
         # Exibir cada perícia em um expander
         for idx, row in df_pericias.iterrows():
-            # Obter entrevistas para contar pendentes
             df_entrevistas = obter_entrevistas(row['id'])
             entrevistas_pendentes = len(df_entrevistas[df_entrevistas['status'] == 'Pendente']) if not df_entrevistas.empty else 0
-            
-            # Título do expander com informações resumidas
-            cor_status = get_status_color(row['status'])
             
             # Emojis coloridos para status
             emoji_status = {
@@ -323,9 +421,9 @@ elif menu == "📊 Listar Perícias":
             titulo = f"**{row['num_processo']}** | {row['classe_acao']} | 👥 {entrevistas_pendentes} pendente(s) | {emoji_status.get(row['status'], '⚪')} {row['status']} | 💰 R$ {row['valor_recebido']:.2f}"
             
             with st.expander(titulo, expanded=False):
-                # Calcular prazo restante
                 dias_restantes, data_limite = calcular_prazo_restante(row['data_nomeacao'], row['prazo_dias'])
                 cor_prazo = "red" if dias_restantes < 0 else "orange" if dias_restantes <= 7 else "green"
+                cor_status = get_status_color(row['status'])
                 
                 col1, col2 = st.columns([3, 1])
                 
@@ -359,7 +457,6 @@ elif menu == "📊 Listar Perícias":
                     
                     if novo_status != row['status']:
                         if novo_status == "Recebida":
-                            # Se mudar para Recebida, pedir valor
                             if st.button("💾 Salvar", key=f"save_status_{row['id']}", use_container_width=True):
                                 st.session_state[f'status_recebida_{row["id"]}'] = True
                         else:
@@ -370,7 +467,6 @@ elif menu == "📊 Listar Perícias":
                     
                     st.markdown("---")
                     
-                    # Botões de ação
                     if row['status'] in ["Aberto", "Em Revisão"]:
                         if st.button("✅ Finalizar Perícia", key=f"fin_{row['id']}", use_container_width=True):
                             st.session_state[f'finalizar_{row["id"]}'] = True
@@ -494,17 +590,86 @@ elif menu == "📊 Listar Perícias":
 
 # PRÓXIMAS ENTREVISTAS
 elif menu == "📅 Próximas Entrevistas":
-    st.header("Próximas Entrevistas Agendadas")
+    st.header("📅 Próximas Entrevistas Agendadas")
     
     df_entrevistas = obter_proximas_entrevistas()
+    total_pendentes = len(df_entrevistas)
     
+    # Métricas
+    col_metric1, col_metric2 = st.columns(2)
+    with col_metric1:
+        st.metric("📋 Total de Entrevistas Pendentes", total_pendentes)
+    with col_metric2:
+        if not df_entrevistas.empty:
+            proxima = df_entrevistas.iloc[0]
+            proxima_data = datetime.strptime(proxima['data_entrevista'], "%Y-%m-%d").strftime("%d/%m/%Y")
+            st.metric("🔔 Próxima Entrevista", f"{proxima_data} às {proxima['hora_entrevista']}")
+    
+    st.markdown("---")
+    
+    # Calendário
+    st.subheader("📆 Calendário de Entrevistas")
+    
+    col_cal1, col_cal2 = st.columns(2)
+    with col_cal1:
+        mes_selecionado = st.selectbox("Mês", list(range(1, 13)), index=datetime.now().month - 1, format_func=lambda x: calendar.month_name[x])
+    with col_cal2:
+        ano_selecionado = st.selectbox("Ano", list(range(2024, 2031)), index=datetime.now().year - 2024)
+    
+    # Obter entrevistas do mês
+    df_entrevistas_mes = obter_entrevistas_mes(ano_selecionado, mes_selecionado)
+    
+    # Criar calendário visual
+    cal = calendar.monthcalendar(ano_selecionado, mes_selecionado)
+    dias_semana = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom']
+    
+    # Cabeçalho do calendário
+    cols_header = st.columns(7)
+    for idx, dia in enumerate(dias_semana):
+        with cols_header[idx]:
+            st.markdown(f"**{dia}**")
+    
+    # Dias do calendário
+    for semana in cal:
+        cols = st.columns(7)
+        for idx, dia in enumerate(semana):
+            with cols[idx]:
+                if dia == 0:
+                    st.markdown("")
+                else:
+                    # Verificar se há entrevistas neste dia
+                    data_busca = f"{ano_selecionado}-{str(mes_selecionado).zfill(2)}-{str(dia).zfill(2)}"
+                    entrevistas_dia = df_entrevistas_mes[df_entrevistas_mes['data_entrevista'] == data_busca]
+                    
+                    if len(entrevistas_dia) > 0:
+                        # Cor baseada no status da perícia
+                        status_pericia = entrevistas_dia.iloc[0]['status_pericia']
+                        cor_dia = get_status_color(status_pericia)
+                        st.markdown(f"<div style='background-color:{cor_dia}; padding:10px; border-radius:5px; text-align:center; color:white; font-weight:bold'>{dia}<br>📅 {len(entrevistas_dia)}</div>", unsafe_allow_html=True)
+                    else:
+                        st.markdown(f"<div style='padding:10px; text-align:center; color:#888'>{dia}</div>", unsafe_allow_html=True)
+    
+    # Legenda
+    st.markdown("---")
+    st.markdown("**Legenda:**")
+    col_leg1, col_leg2, col_leg3, col_leg4 = st.columns(4)
+    with col_leg1:
+        st.markdown("🟠 Aberto")
+    with col_leg2:
+        st.markdown("🟡 Em Revisão")
+    with col_leg3:
+        st.markdown("🔵 Entregue")
+    with col_leg4:
+        st.markdown("🟢 Recebida")
+    
+    st.markdown("---")
+    
+    # Lista de entrevistas
     if df_entrevistas.empty:
         st.info("📭 Nenhuma entrevista pendente.")
     else:
-        st.markdown(f"**Total de entrevistas pendentes:** {len(df_entrevistas)}")
-        st.markdown("---")
+        st.subheader("📋 Lista de Entrevistas Pendentes")
         
-        # Agrupar por data
         df_entrevistas['data_entrevista'] = pd.to_datetime(df_entrevistas['data_entrevista'])
         df_entrevistas = df_entrevistas.sort_values('data_entrevista')
         
@@ -514,7 +679,6 @@ elif menu == "📅 Próximas Entrevistas":
         for idx, ent in df_entrevistas.iterrows():
             data_ent = ent['data_entrevista'].date()
             
-            # Cabeçalho de data
             if data_atual != data_ent:
                 data_atual = data_ent
                 dias_ate = (data_ent - hoje).days
@@ -522,7 +686,7 @@ elif menu == "📅 Próximas Entrevistas":
                 if dias_ate == 0:
                     label_data = "🔴 HOJE"
                 elif dias_ate == 1:
-                    label_data = "🟠 AMANHÃ"
+                    label_data = "🟡 AMANHÃ"
                 elif dias_ate < 0:
                     label_data = f"🔴 ATRASADA ({abs(dias_ate)} dias)"
                 elif dias_ate <= 7:
@@ -532,7 +696,6 @@ elif menu == "📅 Próximas Entrevistas":
                 
                 st.markdown(f"### 📅 {data_ent.strftime('%d/%m/%Y')} - {label_data}")
             
-            # Detalhes da entrevista
             col1, col2 = st.columns([4, 1])
             with col1:
                 st.markdown(f"""
@@ -548,13 +711,14 @@ elif menu == "📅 Próximas Entrevistas":
 
 # RESUMO FINANCEIRO
 elif menu == "💰 Resumo Financeiro":
-    st.header("Resumo Financeiro")
+    st.header("💰 Resumo Financeiro")
     
     df_pericias = listar_pericias()
     
     if df_pericias.empty:
         st.info("📭 Nenhuma perícia cadastrada ainda.")
     else:
+        # Métricas principais
         total_previsto = df_pericias['valor_previsto'].sum()
         total_recebido = df_pericias['valor_recebido'].sum()
         total_pendente = total_previsto - total_recebido
@@ -572,6 +736,86 @@ elif menu == "💰 Resumo Financeiro":
         
         st.markdown("---")
         
+        # Gráficos
+        col_graf1, col_graf2 = st.columns(2)
+        
+        with col_graf1:
+            st.subheader("📊 Valores Financeiros por Mês")
+            df_financeiro = obter_dados_financeiros_mes()
+            
+            if not df_financeiro.empty:
+                df_financeiro['mes_ano_formatado'] = pd.to_datetime(df_financeiro['mes_ano']).dt.strftime('%m/%Y')
+                
+                fig = go.Figure()
+                
+                fig.add_trace(go.Bar(
+                    x=df_financeiro['mes_ano_formatado'],
+                    y=df_financeiro['total_previsto'],
+                    name='Previsto',
+                    marker_color='#1f77b4'
+                ))
+                
+                fig.add_trace(go.Bar(
+                    x=df_financeiro['mes_ano_formatado'],
+                    y=df_financeiro['total_recebido'],
+                    name='Recebido',
+                    marker_color='#2ca02c'
+                ))
+                
+                fig.add_trace(go.Bar(
+                    x=df_financeiro['mes_ano_formatado'],
+                    y=df_financeiro['total_pendente'],
+                    name='Pendente',
+                    marker_color='#ff7f0e'
+                ))
+                
+                fig.update_layout(
+                    barmode='group',
+                    xaxis_title='Mês/Ano',
+                    yaxis_title='Valor (R$)',
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    height=400
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("Nenhum dado financeiro disponível.")
+        
+        with col_graf2:
+            st.subheader("📈 Perícias por Status")
+            df_status = obter_contagem_status()
+            
+            if not df_status.empty:
+                cores_status = {
+                    'Aberto': '#FFA500',
+                    'Em Revisão': '#FFD700',
+                    'Entregue': '#1E90FF',
+                    'Recebida': '#32CD32'
+                }
+                
+                cores = [cores_status.get(status, '#808080') for status in df_status['status']]
+                
+                fig = go.Figure(data=[go.Pie(
+                    labels=df_status['status'],
+                    values=df_status['quantidade'],
+                    marker=dict(colors=cores),
+                    hole=0.4,
+                    textinfo='label+percent+value',
+                    textposition='auto'
+                )])
+                
+                fig.update_layout(
+                    showlegend=True,
+                    legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5),
+                    height=400
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("Nenhum dado de status disponível.")
+        
+        st.markdown("---")
+        
         # Perícias com pagamento pendente
         df_pendentes = df_pericias[df_pericias['valor_recebido'] < df_pericias['valor_previsto']]
         
@@ -580,7 +824,16 @@ elif menu == "💰 Resumo Financeiro":
             
             for idx, row in df_pendentes.iterrows():
                 pendente = row['valor_previsto'] - row['valor_recebido']
-                st.markdown(f"🔸 **{row['num_processo']}** ({row['status']}) - Pendente: R$ {pendente:,.2f}")
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("**Sistema v2.0** | Desenvolvido com ❤️")
+                
+                # Barra de progresso
+                percentual = (row['valor_recebido'] / row['valor_previsto'] * 100) if row['valor_previsto'] > 0 else 0
+                
+                col_p1, col_p2 = st.columns([3, 1])
+                with col_p1:
+                    st.markdown(f"**{row['num_processo']}** ({row['status']})")
+                    st.progress(percentual / 100)
+                    st.caption(f"Recebido: R$ {row['valor_recebido']:,.2f} / Previsto: R$ {row['valor_previsto']:,.2f}")
+                with col_p2:
+                    st.metric("Pendente", f"R$ {pendente:,.2f}")
+                
+                st.markdown("---")
