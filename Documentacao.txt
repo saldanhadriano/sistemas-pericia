@@ -1,11 +1,1 @@
-Alguns pontos para ajuste:
-
-Os itens "Mes - Ano - Hoje" em "Calendário de entrevistas" ficaram desalinhados.
-
-Colocar os meses em pt-BR.
-
-Os ícones dentro das datas agendadas estão desalinhados, ficando muito próximos da borda inferior quase saindo da célula.
-
-As setinhas para avançar ou retroceder os meses não estão funcionando.
-
 https://sistemas-pericia-cxs.streamlit.app/

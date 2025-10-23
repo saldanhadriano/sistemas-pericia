@@ -1,0 +1,20 @@
+# Botão "Hoje"
+    with col_hoje:
+        # Manter o alinhamento com espaço em branco
+        st.markdown("<br>", unsafe_allow_html=True) 
+        
+        # AJUSTE DA FUNÇÃO: Remove a tentativa de modificar as chaves dos widgets.
+        def reset_to_today():
+            """Função de callback para resetar o estado para o mês/ano atual."""
+            # Só atualizamos as chaves de controle do calendário
+            st.session_state.cal_mes = datetime.now().month
+            st.session_state.cal_ano = datetime.now().year
+            # Não é necessário modificar 'select_mes' ou 'select_ano'.
+            # O st.rerun() fará com que o código execute novamente, e os selectboxes
+            # lerão os novos valores de 'cal_mes' e 'cal_ano' através do parâmetro 'index'.
+
+        # Uso do callback para garantir que o estado seja redefinido.
+        if st.button("📅 Hoje", use_container_width=True, type="primary", key="btn_hoje", on_click=reset_to_today):
+            # O on_click executa a função *antes* de finalizar o botão e chamar o rerun.
+            # O st.rerun() dentro do if é a forma mais simples de forçar a recarga.
+            st.rerun()
