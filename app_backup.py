@@ -651,7 +651,8 @@ elif menu == "📅 Próximas Entrevistas":
         if not df_entrevistas.empty:
             proxima = df_entrevistas.iloc[0]
             proxima_data = datetime.strptime(proxima['data_entrevista'], "%Y-%m-%d").strftime("%d/%m/%Y")
-            st.metric("🔔 Próxima Entrevista", f"{proxima_data} às {proxima['hora_entrevista']}")
+            nome_entrevistado = proxima['nome_entrevistado']
+            st.metric("🔔 Próxima Entrevista", f"{nome_entrevistado} em {proxima_data} às {proxima['hora_entrevista']}")
     
     st.markdown("---")
     

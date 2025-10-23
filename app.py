@@ -15,7 +15,7 @@ st.set_page_config(
 )
 
 # Versão do sistema
-VERSAO_SISTEMA = "v25.0"
+VERSAO_SISTEMA = "v30.0"
 
 # Dicionário de tradução para os meses
 NOMES_MESES_PT_BR = {
@@ -75,6 +75,7 @@ st.markdown("""
         display: flex;
         align-items: center;
         justify-content: center;
+        margin: 2px; /* Adiciona margem para afastar do dia anterior/próximo */
     }
     .cal-day, .cal-day-event, .cal-day-normal {
         text-align: center;
@@ -88,12 +89,14 @@ st.markdown("""
         justify-content: center;
         align-items: center;
         box-sizing: border-box; /* Inclui padding e borda no tamanho */
+        margin: 2px 2px; /* APLICADO ESPAÇAMENTO: 2px para todos os lados */
     }
     .cal-day-empty {
         background-color: transparent;
         color: transparent;
         height: 55px; /* Altura fixa para padronizar o espaço */
         box-sizing: border-box;
+        margin: 2px 2px; /* APLICADO ESPAÇAMENTO */
     }
     .cal-day-normal {
         background-color: rgba(150, 150, 150, 0.1);
@@ -105,10 +108,21 @@ st.markdown("""
         color: white;
         border: 2px solid rgba(255, 255, 255, 0.3);
     }
+    /* AJUSTE PARA COMPACTAR A LEGENDA DO CALENDÁRIO */
+    .st-emotion-cache-1r65zjr { /* Classe do div que contém a legenda */
+        margin-top: -10px; /* Reduz espaço acima do primeiro item */
+        margin-bottom: -10px; /* Reduz espaço abaixo do último item */
+    }
+    .st-emotion-cache-16ffz9z { /* Classe do st.markdown que contém o texto da legenda */
+        margin-top: -8px; 
+        margin-bottom: -8px;
+        padding-top: 0px;
+        padding-bottom: 0px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# Funções do Banco de Dados (sem alterações)
+# Funções do Banco de Dados
 def init_db():
     """Inicializa o banco de dados"""
     conn = sqlite3.connect('pericias.db')
@@ -231,10 +245,11 @@ def obter_proximas_entrevistas():
     return df
 
 def obter_entrevistas_mes(ano, mes):
-    """Obtém entrevistas de um mês específico"""
+    """Obtém todas as entrevistas (Pendente ou Realizada) de um mês específico"""
     conn = sqlite3.connect('pericias.db')
+    # A query foi simplificada, pois não precisamos mais do status da perícia (p.status)
     query = '''
-        SELECT e.*, p.num_processo, p.classe_acao, p.vara, p.status as status_pericia
+        SELECT e.*, p.num_processo, p.classe_acao, p.vara
         FROM entrevistas e
         JOIN pericias p ON e.pericia_id = p.id
         WHERE strftime('%Y', e.data_entrevista) = ? 
@@ -382,7 +397,7 @@ st.sidebar.markdown("---")
 st.sidebar.markdown(f"**Versão:** {VERSAO_SISTEMA}")
 st.sidebar.markdown("**Desenvolvido com** ❤️")
 
-# CADASTRAR PERÍCIA (sem alterações)
+# CADASTRAR PERÍCIA
 if menu == "📝 Cadastrar Perícia":
     st.header("📝 Cadastrar Nova Perícia")
     
@@ -424,7 +439,7 @@ if menu == "📝 Cadastrar Perícia":
                 st.success(f"✅ Perícia cadastrada com sucesso! ID: {pericia_id}")
                 st.info("💡 Acesse 'Listar Perícias' para adicionar entrevistas e gerenciar a perícia.")
 
-# LISTAR PERÍCIAS (sem alterações)
+# LISTAR PERÍCIAS
 elif menu == "📊 Listar Perícias":
     st.header("📊 Perícias Cadastradas")
     
@@ -636,22 +651,23 @@ elif menu == "📊 Listar Perícias":
                         else:
                             st.error("Preencha todos os campos!")
 
-# PRÓXIMAS ENTREVISTAS (com alterações)
+# PRÓXIMAS ENTREVISTAS
 elif menu == "📅 Próximas Entrevistas":
     st.header("📅 Próximas Entrevistas Agendadas")
     
-    df_entrevistas = obter_proximas_entrevistas()
-    total_pendentes = len(df_entrevistas)
+    df_entrevistas_pendentes = obter_proximas_entrevistas()
+    total_pendentes = len(df_entrevistas_pendentes)
     
     # Métricas
     col_metric1, col_metric2 = st.columns(2)
     with col_metric1:
         st.metric("📋 Total de Entrevistas Pendentes", total_pendentes)
     with col_metric2:
-        if not df_entrevistas.empty:
-            proxima = df_entrevistas.iloc[0]
+        if not df_entrevistas_pendentes.empty:
+            proxima = df_entrevistas_pendentes.iloc[0]
             proxima_data = datetime.strptime(proxima['data_entrevista'], "%Y-%m-%d").strftime("%d/%m/%Y")
-            st.metric("🔔 Próxima Entrevista", f"{proxima_data} às {proxima['hora_entrevista']}")
+            nome_entrevistado = proxima['nome_entrevistado']
+            st.metric("🔔 Próxima Entrevista", f"{nome_entrevistado} em {proxima_data} às {proxima['hora_entrevista']}")
     
     st.markdown("---")
     
@@ -689,7 +705,6 @@ elif menu == "📅 Próximas Entrevistas":
             st.rerun()
     
     with col_titulo:
-        # **Ajuste:** Usando o dicionário de tradução
         mes_nome = NOMES_MESES_PT_BR.get(st.session_state.cal_mes, str(st.session_state.cal_mes))
         st.markdown(f"<h3 style='text-align:center; margin:0'>{mes_nome} de {st.session_state.cal_ano}</h3>", unsafe_allow_html=True)
     
@@ -708,14 +723,12 @@ elif menu == "📅 Próximas Entrevistas":
             st.session_state.cal_ano = datetime.now().year
             st.rerun()
     
-    # Obter entrevistas do mês
+    # Obter TODAS as entrevistas do mês (para calcular pendentes)
     df_entrevistas_mes = obter_entrevistas_mes(st.session_state.cal_ano, st.session_state.cal_mes)
     
     # Criar calendário visual compacto
     cal = calendar.monthcalendar(st.session_state.cal_ano, st.session_state.cal_mes)
     dias_semana = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom']
-    
-    # O CSS para o calendário compacto foi ajustado no início do código
     
     # Cabeçalho do calendário
     cols_header = st.columns(7)
@@ -729,49 +742,59 @@ elif menu == "📅 Próximas Entrevistas":
         for idx, dia in enumerate(semana):
             with cols[idx]:
                 if dia == 0:
-                    st.markdown("<div class='cal-day cal-day-empty'> </div>", unsafe_allow_html=True) # Alterado '.' para ' '
+                    st.markdown("<div class='cal-day cal-day-empty'> </div>", unsafe_allow_html=True)
                 else:
-                    # Verificar se há entrevistas neste dia
+                    # 1. Montar a data para busca
                     data_busca = f"{st.session_state.cal_ano}-{str(st.session_state.cal_mes).zfill(2)}-{str(dia).zfill(2)}"
+                    
+                    # 2. Filtrar entrevistas do dia
                     entrevistas_dia = df_entrevistas_mes[df_entrevistas_mes['data_entrevista'] == data_busca]
                     
-                    if len(entrevistas_dia) > 0:
-                        # Cor baseada no status da perícia
-                        status_pericia = entrevistas_dia.iloc[0]['status_pericia']
-                        cor_dia = get_status_color(status_pericia)
-                        # **Ajuste:** Mantendo o tamanho padrão com o novo CSS
-                        st.markdown(f"<div class='cal-day cal-day-event' style='background-color:{cor_dia}'>{dia}<br><small>{len(entrevistas_dia)} 📅</small></div>", unsafe_allow_html=True)
+                    if not entrevistas_dia.empty:
+                        # 3. Contar entrevistas pendentes
+                        count_pendente = len(entrevistas_dia[entrevistas_dia['status'] == 'Pendente'])
+                        count_total = len(entrevistas_dia)
+
+                        # 4. Definir a cor baseada no status das entrevistas
+                        if count_pendente > 0:
+                            # Se houver PENDENTE, cor Laranja (Entrevista Agendada)
+                            cor_dia = "#FFA500" # Laranja
+                            badge_text = f"{count_pendente} 🟡"
+                        else:
+                            # Se todas as TOTAL estiverem Realizadas, cor Verde (Concluído)
+                            cor_dia = "#32CD32" # Verde
+                            badge_text = f"{count_total} ✓"
+                            
+                        # 5. Exibir o dia e a contagem de PENDENTES/TOTAL
+                        st.markdown(f"<div class='cal-day cal-day-event' style='background-color:{cor_dia}'>{dia}<br><small>{badge_text}</small></div>", unsafe_allow_html=True)
                     else:
+                        # Dia sem entrevistas
                         st.markdown(f"<div class='cal-day cal-day-normal'>{dia}</div>", unsafe_allow_html=True)
     
-    # Legenda
+    # Legenda (Atualizada para refletir a lógica de entrevista)
     st.markdown("---")
-    st.markdown("**Legenda:**")
-    col_leg1, col_leg2, col_leg3, col_leg4 = st.columns(4)
+    st.markdown("**Legenda (Calendário de Entrevistas):**")
+    col_leg1, col_leg2 = st.columns(2)
     with col_leg1:
-        st.markdown("🟠 Aberto")
+        st.markdown("<div class='st-emotion-cache-16ffz9z'>🟡 Pendente</div>", unsafe_allow_html=True)
     with col_leg2:
-        st.markdown("🟡 Em Revisão")
-    with col_leg3:
-        st.markdown("🔵 Entregue")
-    with col_leg4:
-        st.markdown("🟢 Recebida")
+        st.markdown("<div class='st-emotion-cache-16ffz9z'>✓ Concluída</div>", unsafe_allow_html=True)
     
     st.markdown("---")
     
-    # Lista de entrevistas
-    if df_entrevistas.empty:
+    # Lista de entrevistas (Usa df_entrevistas_pendentes)
+    if df_entrevistas_pendentes.empty:
         st.info("📭 Nenhuma entrevista pendente.")
     else:
         st.subheader("📋 Lista de Entrevistas Pendentes")
         
-        df_entrevistas['data_entrevista'] = pd.to_datetime(df_entrevistas['data_entrevista'])
-        df_entrevistas = df_entrevistas.sort_values('data_entrevista')
+        df_entrevistas_pendentes['data_entrevista'] = pd.to_datetime(df_entrevistas_pendentes['data_entrevista'])
+        df_entrevistas_pendentes = df_entrevistas_pendentes.sort_values('data_entrevista')
         
         data_atual = None
         hoje = datetime.now().date()
         
-        for idx, ent in df_entrevistas.iterrows():
+        for idx, ent in df_entrevistas_pendentes.iterrows():
             data_ent = ent['data_entrevista'].date()
             
             if data_atual != data_ent:
@@ -804,7 +827,7 @@ elif menu == "📅 Próximas Entrevistas":
             
             st.markdown("---")
 
-# RESUMO FINANCEIRO (sem alterações)
+# RESUMO FINANCEIRO
 elif menu == "💰 Resumo Financeiro":
     st.header("💰 Resumo Financeiro")
     
