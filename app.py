@@ -5,6 +5,12 @@ from datetime import datetime, timedelta
 import calendar
 import plotly.express as px
 import plotly.graph_objects as go
+import shortuuid      # Para gerar tokens (pip install shortuuid)
+import bcrypt         # Para hash de senhas (pip install bcrypt)
+
+# ----------------------------------------------------------------------
+# 1. CONFIGURAÇÕES E UTILITÁRIOS GLOBAIS
+# ----------------------------------------------------------------------
 
 # Configuração da página
 st.set_page_config(
@@ -15,7 +21,7 @@ st.set_page_config(
 )
 
 # Versão do sistema
-VERSAO_SISTEMA = "v30.0"
+VERSAO_SISTEMA = "v4.4 (Multiusuário)" # Versão corrigida
 
 # Dicionário de tradução para os meses
 NOMES_MESES_PT_BR = {
@@ -24,7 +30,19 @@ NOMES_MESES_PT_BR = {
     9: "Setembro", 10: "Outubro", 11: "Novembro", 12: "Dezembro"
 }
 
-# CSS personalizado para melhorar o design
+# Variáveis de Estado do Streamlit para controle de sessão
+if 'logged_in' not in st.session_state:
+    st.session_state.logged_in = False
+if 'user_id' not in st.session_state:
+    st.session_state.user_id = None
+if 'user_email' not in st.session_state:
+    st.session_state.user_email = None
+if 'user_type' not in st.session_state:
+    st.session_state.user_type = None # 'admin' ou 'normal'
+if 'current_menu' not in st.session_state:
+    st.session_state.current_menu = "Login"
+
+# CSS personalizado para melhorar o design (Mantido)
 st.markdown("""
 <style>
     .main-header {
@@ -52,16 +70,6 @@ st.markdown("""
         border-radius: 10px;
         border: 1px solid #dee2e6;
     }
-    .calendar-day {
-        padding: 10px;
-        border-radius: 5px;
-        text-align: center;
-        margin: 2px;
-    }
-    .calendar-has-event {
-        background-color: #ffc107;
-        font-weight: bold;
-    }
     /* CSS para o Calendário Compacto - Ajuste para tamanho padrão */
     .cal-header {
         text-align: center;
@@ -75,7 +83,7 @@ st.markdown("""
         display: flex;
         align-items: center;
         justify-content: center;
-        margin: 2px; /* Adiciona margem para afastar do dia anterior/próximo */
+        margin: 2px 2px;
     }
     .cal-day, .cal-day-event, .cal-day-normal {
         text-align: center;
@@ -88,15 +96,15 @@ st.markdown("""
         flex-direction: column;
         justify-content: center;
         align-items: center;
-        box-sizing: border-box; /* Inclui padding e borda no tamanho */
-        margin: 2px 2px; /* APLICADO ESPAÇAMENTO: 2px para todos os lados */
+        box-sizing: border-box;
+        margin: 2px 2px;
     }
     .cal-day-empty {
         background-color: transparent;
         color: transparent;
-        height: 55px; /* Altura fixa para padronizar o espaço */
+        height: 55px;
         box-sizing: border-box;
-        margin: 2px 2px; /* APLICADO ESPAÇAMENTO */
+        margin: 2px 2px;
     }
     .cal-day-normal {
         background-color: rgba(150, 150, 150, 0.1);
@@ -108,27 +116,105 @@ st.markdown("""
         color: white;
         border: 2px solid rgba(255, 255, 255, 0.3);
     }
-    /* AJUSTE PARA COMPACTAR A LEGENDA DO CALENDÁRIO */
-    .st-emotion-cache-1r65zjr { /* Classe do div que contém a legenda */
-        margin-top: -10px; /* Reduz espaço acima do primeiro item */
-        margin-bottom: -10px; /* Reduz espaço abaixo do último item */
+    
+    /* CLASSE CUSTOMIZADA PARA COMPACTAR A LEGENDA */
+    div.legenda-compacta {
+        /* Define um padding vertical pequeno para descolar o texto (Ajuste 2) */
+        padding-top: 3px !important; 
+        padding-bottom: 3px !important;
+        margin: 0;
+        line-height: initial; 
     }
-    .st-emotion-cache-16ffz9z { /* Classe do st.markdown que contém o texto da legenda */
-        margin-top: -8px; 
-        margin-bottom: -8px;
-        padding-top: 0px;
-        padding-bottom: 0px;
+    
+    /* Tentativas de aplicação de margem negativa para reduzir o espaço entre as linhas divisórias e a legenda */
+    /* Container do Título */
+    div[data-testid="stMarkdownContainer"]:has(.legenda-compacta) {
+        margin-top: -10px !important; /* Puxa para perto da linha superior */
+        margin-bottom: -10px !important; /* Puxa para perto dos itens */
+        padding: 0 !important;
+    }
+    
+    /* Classe para containers de colunas para reduzir o espaço entre itens da legenda */
+    div[data-testid="stVerticalBlock"] > div[data-testid="stHorizontalBlock"] {
+        margin-top: -15px !important; 
     }
 </style>
 """, unsafe_allow_html=True)
 
-# Funções do Banco de Dados
-def init_db():
-    """Inicializa o banco de dados"""
-    conn = sqlite3.connect('pericias.db')
+# ----------------------------------------------------------------------
+# 2. FUNÇÕES DE AUTENTICAÇÃO E DB DE USUÁRIOS
+# ----------------------------------------------------------------------
+
+USER_DB_NAME = 'users.db'
+
+def get_user_conn():
+    """Retorna a conexão com o banco de dados central de usuários."""
+    conn = sqlite3.connect(USER_DB_NAME)
+    return conn
+
+def hash_password(password):
+    """Gera o hash da senha usando bcrypt."""
+    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+def check_password(password, hashed_password):
+    """Verifica se a senha corresponde ao hash."""
+    return bcrypt.checkpw(password.encode('utf-8'), hashed_password.encode('utf-8'))
+
+def generate_recovery_token():
+    """Gera um token de recuperação alfanumérico com símbolos."""
+    chars = shortuuid.ShortUUID().get_alphabet() + '$_#@!'
+    return shortuuid.ShortUUID(chars).random(length=12)
+
+def init_user_db():
+    """Inicializa o banco de dados central de usuários e cria a conta admin."""
+    conn = get_user_conn()
     c = conn.cursor()
     
-    # Tabela de perícias
+    # Tabela de Usuários
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nome TEXT NOT NULL,
+            sobrenome TEXT,
+            email TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            recovery_token TEXT,             -- Token único para recuperação de senha
+            must_change_password BOOLEAN DEFAULT 0, -- Obriga a troca de senha no próximo login
+            tipo_usuario TEXT DEFAULT 'normal' -- 'normal', 'admin'
+        )
+    ''')
+    
+    # Criar usuário ADMIN se não existir
+    admin_email = "admin@pericias.com"
+    admin_password = "admin_password" 
+    
+    c.execute("SELECT id FROM users WHERE email = ?", (admin_email,))
+    if c.fetchone() is None:
+        hashed_password = hash_password(admin_password)
+        
+        # O Admin não precisa de token de recuperação, mas precisa de uma senha inicial
+        c.execute('''
+            INSERT INTO users (nome, sobrenome, email, password_hash, tipo_usuario)
+            VALUES (?, ?, ?, ?, ?)
+        ''', ('Admin', 'Master', admin_email, hashed_password, 'admin'))
+        conn.commit()
+    conn.close()
+
+# ----------------------------------------------------------------------
+# 3. FUNÇÕES DB POR USUÁRIO (ISOLAMENTO DE DADOS)
+# ----------------------------------------------------------------------
+
+def get_pericias_db_name(user_id):
+    """Gera o nome do DB específico para o usuário."""
+    return f'pericias_user_{user_id}.db'
+
+def init_pericia_db(user_id):
+    """Inicializa o banco de dados de perícias para um usuário específico."""
+    db_name = get_pericias_db_name(user_id)
+    conn = sqlite3.connect(db_name)
+    c = conn.cursor()
+    
+    # Tabela de perícias (Mantida da V3.0)
     c.execute('''
         CREATE TABLE IF NOT EXISTS pericias (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -147,7 +233,7 @@ def init_db():
         )
     ''')
     
-    # Tabela de entrevistas
+    # Tabela de entrevistas (Mantida da V3.0)
     c.execute('''
         CREATE TABLE IF NOT EXISTS entrevistas (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -160,7 +246,7 @@ def init_db():
         )
     ''')
     
-    # Verificar se a coluna status existe na tabela entrevistas
+    # Garantir que a coluna status existe na tabela entrevistas
     c.execute("PRAGMA table_info(entrevistas)")
     columns = [column[1] for column in c.fetchall()]
     if 'status' not in columns:
@@ -169,9 +255,19 @@ def init_db():
     conn.commit()
     conn.close()
 
+# ----------------------------------------------------------------------
+# 4. FUNÇÕES CRUD DE PERÍCIAS (AJUSTADAS PARA ISOLAMENTO)
+# ----------------------------------------------------------------------
+
+def get_pericias_conn():
+    """Obtém a conexão com o DB da perícia do usuário logado."""
+    if not st.session_state.logged_in or st.session_state.user_id is None:
+        raise PermissionError("Usuário não logado ou ID inválido.")
+    db_name = get_pericias_db_name(st.session_state.user_id)
+    return sqlite3.connect(db_name)
+
 def adicionar_pericia(dados):
-    """Adiciona uma nova perícia"""
-    conn = sqlite3.connect('pericias.db')
+    conn = get_pericias_conn()
     c = conn.cursor()
     c.execute('''
         INSERT INTO pericias (vara, num_processo, classe_acao, data_nomeacao, 
@@ -185,8 +281,7 @@ def adicionar_pericia(dados):
     return pericia_id
 
 def adicionar_entrevista(pericia_id, data, hora, nome):
-    """Adiciona uma entrevista"""
-    conn = sqlite3.connect('pericias.db')
+    conn = get_pericias_conn()
     c = conn.cursor()
     c.execute('''
         INSERT INTO entrevistas (pericia_id, data_entrevista, hora_entrevista, nome_entrevistado, status)
@@ -196,8 +291,7 @@ def adicionar_entrevista(pericia_id, data, hora, nome):
     conn.close()
 
 def listar_pericias(filtro_status=None, filtro_vara=None, busca_processo=None):
-    """Lista todas as perícias com filtros"""
-    conn = sqlite3.connect('pericias.db')
+    conn = get_pericias_conn()
     query = "SELECT * FROM pericias WHERE 1=1"
     params = []
     
@@ -220,8 +314,7 @@ def listar_pericias(filtro_status=None, filtro_vara=None, busca_processo=None):
     return df
 
 def obter_entrevistas(pericia_id):
-    """Obtém entrevistas de uma perícia"""
-    conn = sqlite3.connect('pericias.db')
+    conn = get_pericias_conn()
     df = pd.read_sql_query(
         "SELECT * FROM entrevistas WHERE pericia_id = ? ORDER BY data_entrevista, hora_entrevista",
         conn,
@@ -231,8 +324,7 @@ def obter_entrevistas(pericia_id):
     return df
 
 def obter_proximas_entrevistas():
-    """Obtém todas as entrevistas pendentes ordenadas por data"""
-    conn = sqlite3.connect('pericias.db')
+    conn = get_pericias_conn()
     query = '''
         SELECT e.*, p.num_processo, p.classe_acao, p.vara
         FROM entrevistas e
@@ -245,9 +337,7 @@ def obter_proximas_entrevistas():
     return df
 
 def obter_entrevistas_mes(ano, mes):
-    """Obtém todas as entrevistas (Pendente ou Realizada) de um mês específico"""
-    conn = sqlite3.connect('pericias.db')
-    # A query foi simplificada, pois não precisamos mais do status da perícia (p.status)
+    conn = get_pericias_conn()
     query = '''
         SELECT e.*, p.num_processo, p.classe_acao, p.vara
         FROM entrevistas e
@@ -260,32 +350,28 @@ def obter_entrevistas_mes(ano, mes):
     return df
 
 def excluir_pericia(pericia_id):
-    """Exclui uma perícia"""
-    conn = sqlite3.connect('pericias.db')
+    conn = get_pericias_conn()
     c = conn.cursor()
     c.execute("DELETE FROM pericias WHERE id = ?", (pericia_id,))
     conn.commit()
     conn.close()
 
 def atualizar_status_entrevista(entrevista_id, novo_status):
-    """Atualiza o status de uma entrevista"""
-    conn = sqlite3.connect('pericias.db')
+    conn = get_pericias_conn()
     c = conn.cursor()
     c.execute("UPDATE entrevistas SET status = ? WHERE id = ?", (novo_status, entrevista_id))
     conn.commit()
     conn.close()
 
 def atualizar_status_pericia(pericia_id, novo_status):
-    """Atualiza o status de uma perícia"""
-    conn = sqlite3.connect('pericias.db')
+    conn = get_pericias_conn()
     c = conn.cursor()
     c.execute("UPDATE pericias SET status = ? WHERE id = ?", (novo_status, pericia_id))
     conn.commit()
     conn.close()
 
 def finalizar_pericia(pericia_id, data_entrega, valor_recebido):
-    """Finaliza uma perícia atualizando data de entrega e valor recebido"""
-    conn = sqlite3.connect('pericias.db')
+    conn = get_pericias_conn()
     c = conn.cursor()
     
     if valor_recebido > 0:
@@ -302,8 +388,7 @@ def finalizar_pericia(pericia_id, data_entrega, valor_recebido):
     conn.close()
 
 def atualizar_valor_recebido(pericia_id, valor_recebido):
-    """Atualiza o valor recebido de uma perícia"""
-    conn = sqlite3.connect('pericias.db')
+    conn = get_pericias_conn()
     c = conn.cursor()
     c.execute('''
         UPDATE pericias 
@@ -314,38 +399,14 @@ def atualizar_valor_recebido(pericia_id, valor_recebido):
     conn.close()
 
 def excluir_entrevista(entrevista_id):
-    """Exclui uma entrevista"""
-    conn = sqlite3.connect('pericias.db')
+    conn = get_pericias_conn()
     c = conn.cursor()
     c.execute("DELETE FROM entrevistas WHERE id = ?", (entrevista_id,))
     conn.commit()
     conn.close()
 
-def calcular_prazo_restante(data_nomeacao, prazo_dias):
-    """Calcula quantos dias restam até o prazo"""
-    data_limite = datetime.strptime(data_nomeacao, "%Y-%m-%d") + timedelta(days=prazo_dias)
-    dias_restantes = (data_limite - datetime.now()).days
-    return dias_restantes, data_limite.strftime("%d/%m/%Y")
-
-def formatar_data(data_str):
-    """Converte data de YYYY-MM-DD para DD/MM/YYYY"""
-    if data_str and data_str != "None":
-        return datetime.strptime(data_str, "%Y-%m-%d").strftime("%d/%m/%Y")
-    return "-"
-
-def get_status_color(status):
-    """Retorna a cor do status"""
-    cores = {
-        "Aberto": "#FFA500",      # Laranja
-        "Em Revisão": "#FFD700",  # Amarelo/Ouro
-        "Entregue": "#1E90FF",    # Azul
-        "Recebida": "#32CD32"     # Verde
-    }
-    return cores.get(status, "#808080")
-
 def obter_dados_financeiros_mes():
-    """Obtém dados financeiros agrupados por mês"""
-    conn = sqlite3.connect('pericias.db')
+    conn = get_pericias_conn()
     query = '''
         SELECT 
             strftime('%Y-%m', data_nomeacao) as mes_ano,
@@ -361,8 +422,7 @@ def obter_dados_financeiros_mes():
     return df
 
 def obter_contagem_status():
-    """Obtém contagem de perícias por status"""
-    conn = sqlite3.connect('pericias.db')
+    conn = get_pericias_conn()
     query = '''
         SELECT status, COUNT(*) as quantidade
         FROM pericias
@@ -371,34 +431,371 @@ def obter_contagem_status():
     df = pd.read_sql_query(query, conn)
     conn.close()
     return df
+    
+# Funções utilitárias (sem alteração de DB)
+def calcular_prazo_restante(data_nomeacao, prazo_dias):
+    """Calcula quantos dias restam até o prazo"""
+    data_limite = datetime.strptime(data_nomeacao, "%Y-%m-%d") + timedelta(days=prazo_dias)
+    dias_restantes = (data_limite - datetime.now()).days
+    return dias_restantes, data_limite.strftime("%d/%m/%Y")
 
-# Inicializar banco de dados
-init_db()
+def formatar_data(data_str):
+    """Converte data de YYYY-MM-DD para DD/MM/YYYY"""
+    if data_str and data_str != "None":
+        return datetime.strptime(data_str, "%Y-%m-%d").strftime("%d/%m/%Y")
+    return "-"
 
-# Interface Principal
-col_title, col_version = st.columns([6, 1])
-with col_title:
-    st.markdown('<p class="main-header">📋 Sistema de Gestão de Perícias</p>', unsafe_allow_html=True)
-with col_version:
-    st.markdown(f'<span class="version-badge">{VERSAO_SISTEMA}</span>', unsafe_allow_html=True)
+def get_status_color(status):
+    """Retorna a cor do status da perícia"""
+    cores = {
+        "Aberto": "#FFA500",      # Laranja
+        "Em Revisão": "#FFD700",  # Amarelo/Ouro
+        "Entregue": "#1E90FF",    # Azul
+        "Recebida": "#32CD32"     # Verde
+    }
+    return cores.get(status, "#808080")
 
-st.markdown("---")
 
-# Menu lateral
-st.sidebar.markdown("### 📌 Menu Principal")
+# ----------------------------------------------------------------------
+# 5. TELAS DE AUTENTICAÇÃO
+# ----------------------------------------------------------------------
 
-menu = st.sidebar.selectbox(
-    "Navegação",
-    ["📝 Cadastrar Perícia", "📊 Listar Perícias", "📅 Próximas Entrevistas", "💰 Resumo Financeiro"],
-    label_visibility="collapsed"
-)
+def logout():
+    """Função de logout - REMOVIDO st.rerun() para evitar o aviso de callback"""
+    st.session_state.logged_in = False
+    st.session_state.user_id = None
+    st.session_state.user_email = None
+    st.session_state.user_type = None
+    st.session_state.current_menu = "Login"
 
-st.sidebar.markdown("---")
-st.sidebar.markdown(f"**Versão:** {VERSAO_SISTEMA}")
-st.sidebar.markdown("**Desenvolvido com** ❤️")
+def show_login_page():
+    st.markdown("## 🔑 Acesso ao Sistema")
+    
+    col1, col2 = st.columns([1, 1])
 
-# CADASTRAR PERÍCIA
-if menu == "📝 Cadastrar Perícia":
+    with col1:
+        with st.form("login_form"):
+            email = st.text_input("E-mail")
+            password = st.text_input("Senha", type="password")
+            
+            submit = st.form_submit_button("Entrar", type="primary", use_container_width=True)
+
+            if submit:
+                conn = get_user_conn()
+                c = conn.cursor()
+                # Tenta obter a senha hash e a flag de troca obrigatória
+                c.execute("SELECT id, nome, password_hash, tipo_usuario, must_change_password FROM users WHERE email = ?", (email,))
+                user_data = c.fetchone()
+                conn.close()
+                
+                if user_data:
+                    user_id, nome, hashed_password, tipo_usuario, must_change = user_data
+                    
+                    if check_password(password, hashed_password):
+                        st.session_state.logged_in = True
+                        st.session_state.user_id = user_id
+                        st.session_state.user_email = email
+                        st.session_state.user_type = tipo_usuario
+                        st.session_state.must_change_password = bool(must_change)
+                        
+                        # Inicializa o DB de perícias do usuário se for a primeira vez
+                        init_pericia_db(user_id)
+                        
+                        if st.session_state.must_change_password:
+                            st.session_state.current_menu = "ForcedPasswordChange"
+                        else:
+                            st.success(f"Bem-vindo(a), {nome}!")
+                            st.session_state.current_menu = "Dashboard"
+                        st.rerun()
+                    else:
+                        st.error("Credenciais inválidas.")
+                else:
+                    st.error("Credenciais inválidas.")
+
+    with col2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("Criar Novo Usuário", key="go_create", use_container_width=True):
+            st.session_state.current_menu = "CreateUser"
+            st.rerun()
+        if st.button("Esqueci Minha Senha / Token", key="go_reset", use_container_width=True):
+            st.session_state.current_menu = "ForgotPassword"
+            st.rerun()
+
+
+def show_create_user_page():
+    st.markdown("## 📝 Criar Nova Conta")
+    
+    if 'temp_recovery_token' not in st.session_state:
+        st.session_state.temp_recovery_token = None
+        st.session_state.show_token_info = False
+
+    if st.session_state.show_token_info:
+        # Tela de Sucesso/Exibição do Token
+        st.success("✅ Conta criada com sucesso!")
+        st.warning(f"""
+            **ATENÇÃO: GUARDE O SEU TOKEN DE RECUPERAÇÃO!**
+            
+            Se você esquecer sua senha, este é o único código que permitirá a você
+            redefini-la (a não ser que peça ao Administrador para intervir).
+            
+            **Seu Token de Recuperação:**
+            <div style='background-color:#1f77b4; padding: 10px; border-radius: 5px; font-size: 1.2rem;'>
+                <code>{st.session_state.temp_recovery_token}</code>
+            </div>
+        """, unsafe_allow_html=True)
+
+        if st.button("Continuar para Login", type="primary", use_container_width=True):
+            del st.session_state.temp_recovery_token
+            del st.session_state.show_token_info
+            st.session_state.current_menu = "Login"
+            st.rerun()
+
+    else:
+        # Formulário de Cadastro
+        with st.form("create_user_form"):
+            st.subheader("Dados de Acesso")
+            col1, col2 = st.columns(2)
+            with col1:
+                nome = st.text_input("Nome *")
+                email = st.text_input("E-mail *")
+                password = st.text_input("Senha *", type="password")
+            with col2:
+                sobrenome = st.text_input("Sobrenome")
+                st.markdown("<br>", unsafe_allow_html=True)
+                confirm_password = st.text_input("Confirmar Senha *", type="password")
+            
+            submit = st.form_submit_button("Criar Conta", type="primary", use_container_width=True)
+            
+            if submit:
+                if not nome or not email or not password or not confirm_password:
+                    st.error("Por favor, preencha todos os campos obrigatórios (*).")
+                elif password != confirm_password:
+                    st.error("As senhas não coincidem.")
+                elif len(password) < 6:
+                    st.error("A senha deve ter pelo menos 6 caracteres.")
+                else:
+                    conn = get_user_conn()
+                    c = conn.cursor()
+                    
+                    hashed_password = hash_password(password)
+                    recovery_token = generate_recovery_token()
+                    
+                    try:
+                        c.execute('''
+                            INSERT INTO users (nome, sobrenome, email, password_hash, recovery_token)
+                            VALUES (?, ?, ?, ?, ?)
+                        ''', (nome, sobrenome, email, hashed_password, recovery_token))
+                        user_id = c.lastrowid
+                        conn.commit()
+                        
+                        # Ativação imediata e preparação para exibir o token
+                        init_pericia_db(user_id) # Cria o DB pessoal
+                        st.session_state.temp_recovery_token = recovery_token
+                        st.session_state.show_token_info = True
+                        st.rerun()
+                    except sqlite3.IntegrityError:
+                        st.error("❌ Erro: O e-mail fornecido já está em uso.")
+                    finally:
+                        conn.close()
+
+        st.markdown("---")
+        if st.button("Voltar para Login", key="back_from_create"):
+            st.session_state.current_menu = "Login"
+            st.rerun()
+
+
+def show_forgot_password_page():
+    st.markdown("## ❓ Redefinição de Senha")
+    st.info("Para redefinir, você precisará do e-mail cadastrado e do seu Token de Recuperação único.")
+    
+    if 'reset_step' not in st.session_state:
+        st.session_state.reset_step = 1
+        st.session_state.reset_user_id = None
+        st.session_state.reset_token = None
+
+    if st.session_state.reset_step == 1:
+        # Passo 1: Solicitar E-mail e Token
+        with st.form("reset_step1"):
+            email = st.text_input("E-mail cadastrado")
+            token_input = st.text_input("Token de Recuperação", help="O código alfanumérico com símbolos que você salvou no cadastro.")
+            
+            if st.form_submit_button("Validar Dados", type="primary"):
+                conn = get_user_conn()
+                c = conn.cursor()
+                
+                # Busca por e-mail E token
+                c.execute("SELECT id, recovery_token FROM users WHERE email = ?", (email,))
+                user_data = c.fetchone()
+                conn.close()
+                
+                if user_data:
+                    user_id, stored_token = user_data
+                    if token_input == stored_token:
+                        st.session_state.reset_user_id = user_id
+                        st.session_state.reset_step = 2
+                        st.success("Token validado. Prossiga para definir a nova senha.")
+                        st.rerun()
+                    else:
+                        st.error("Token de Recuperação incorreto.")
+                else:
+                    st.error("E-mail não encontrado.")
+    
+    elif st.session_state.reset_step == 2:
+        # Passo 2: Definir Nova Senha
+        st.subheader("Definir Nova Senha")
+        with st.form("reset_step2"):
+            new_password = st.text_input("Nova Senha *", type="password")
+            confirm_new_password = st.text_input("Confirmar Nova Senha *", type="password")
+            
+            if st.form_submit_button("Alterar Senha", type="primary"):
+                if new_password != confirm_new_password:
+                    st.error("As senhas não coincidem.")
+                elif len(new_password) < 6:
+                    st.error("A senha deve ter pelo menos 6 caracteres.")
+                else:
+                    conn = get_user_conn()
+                    c = conn.cursor()
+                    
+                    hashed_password = hash_password(new_password)
+                    
+                    # Atualiza a senha e gera um novo token para a próxima vez (segurança)
+                    new_token = generate_recovery_token()
+                    user_id = st.session_state.reset_user_id
+                    
+                    c.execute("UPDATE users SET password_hash = ?, recovery_token = ?, must_change_password = 0 WHERE id = ?", 
+                              (hashed_password, new_token, user_id))
+                    conn.commit()
+                    conn.close()
+                    
+                    st.success("✅ Senha alterada com sucesso! Faça login com a nova senha.")
+                    st.warning(f"**Novo Token de Recuperação:** Guarde-o para o futuro: `{new_token}`")
+                    
+                    # Limpar estados
+                    for key in ['reset_step', 'reset_user_id', 'reset_token']:
+                        if key in st.session_state:
+                            del st.session_state[key]
+                            
+                    st.session_state.current_menu = "Login"
+                    st.rerun()
+
+    st.markdown("---")
+    if st.button("Voltar para Login", key="back_from_reset"):
+        # Limpar estados temporários se voltar
+        for key in ['reset_step', 'reset_user_id', 'reset_token']:
+            if key in st.session_state:
+                del st.session_state[key]
+        st.session_state.current_menu = "Login"
+        st.rerun()
+
+def show_forced_password_change():
+    st.markdown("## 🔒 Troca de Senha Obrigatória")
+    st.warning("Sua senha foi redefinida pelo administrador. Por favor, defina uma nova senha para acessar o sistema.")
+    
+    with st.form("forced_change_form"):
+        new_password = st.text_input("Nova Senha *", type="password")
+        confirm_new_password = st.text_input("Confirmar Nova Senha *", type="password")
+        
+        if st.form_submit_button("Definir Nova Senha", type="primary"):
+            if new_password != confirm_new_password:
+                st.error("As senhas não coincidem.")
+            elif len(new_password) < 6:
+                st.error("A senha deve ter pelo menos 6 caracteres.")
+            else:
+                conn = get_user_conn()
+                c = conn.cursor()
+                
+                hashed_password = hash_password(new_password)
+                user_id = st.session_state.user_id
+                
+                # Atualiza a senha e ZERA a flag must_change_password
+                c.execute("UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?", 
+                          (hashed_password, user_id))
+                conn.commit()
+                conn.close()
+                
+                st.success("✅ Senha atualizada com sucesso!")
+                st.session_state.must_change_password = False
+                st.session_state.current_menu = "Dashboard"
+                st.rerun()
+
+
+# ----------------------------------------------------------------------
+# 6. FUNÇÕES DO PAINEL ADMIN
+# ----------------------------------------------------------------------
+
+def show_admin_dashboard():
+    if st.session_state.user_type != 'admin':
+        st.error("Acesso negado. Você não tem permissão de administrador.")
+        return
+
+    st.header("👑 Painel de Administração")
+    st.markdown("Gerencie usuários e realize recuperações de senha.")
+    st.markdown("---")
+
+    conn = get_user_conn()
+    df_users = pd.read_sql_query("SELECT id, nome, sobrenome, email, tipo_usuario FROM users", conn)
+    conn.close()
+    
+    st.subheader(f"Usuários Registrados: {len(df_users)}")
+
+    # Exibir tabela de usuários
+    st.dataframe(df_users, use_container_width=True, hide_index=True)
+
+    # Gerenciamento de Senha Provisória
+    st.markdown("### Geração de Senha Provisória (Admin Reset)")
+    
+    with st.expander("Gerar Nova Senha para Usuário", expanded=False):
+        with st.form("admin_reset_form"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Filtra apenas usuários não-admin para reset
+                user_ids_for_reset = df_users[df_users['tipo_usuario'] != 'admin']['id'].tolist()
+                user_ids_for_reset.insert(0, None) # Adiciona a opção None para seleção inicial
+                
+                user_id_to_reset = st.selectbox(
+                    "Selecione o ID do Usuário",
+                    user_ids_for_reset
+                )
+                
+            with col2:
+                new_temp_password = st.text_input("Nova Senha Provisória *", type="password")
+            
+            if st.form_submit_button("Forçar Nova Senha e Troca Obrigatória", type="primary"):
+                if user_id_to_reset is None:
+                    st.error("Selecione um usuário para redefinir a senha.")
+                elif not new_temp_password or len(new_temp_password) < 6:
+                    st.error("A senha provisória deve ter pelo menos 6 caracteres.")
+                else:
+                    hashed_password = hash_password(new_temp_password)
+                    
+                    conn = get_user_conn()
+                    c = conn.cursor()
+                    
+                    # 1. Atualiza a senha e seta a flag 'must_change_password' para TRUE
+                    c.execute("UPDATE users SET password_hash = ?, must_change_password = 1, recovery_token = ? WHERE id = ?", 
+                              (hashed_password, generate_recovery_token(), user_id_to_reset))
+                    conn.commit()
+                    conn.close()
+                    
+                    user_email = df_users[df_users['id'] == user_id_to_reset]['email'].iloc[0]
+
+                    st.success(f"""
+                        ✅ Senha do usuário **{user_email} (ID: {user_id_to_reset})** redefinida.
+                        
+                        **Atenção:** Comunique esta senha ao usuário e instrua-o a fazer login
+                        imediatamente para definir a senha definitiva.
+                        
+                        **SENHA PROVISÓRIA:** `{new_temp_password}`
+                    """)
+                    st.rerun()
+
+
+# ----------------------------------------------------------------------
+# 7. FUNÇÕES DE EXIBIÇÃO DO CONTEÚDO PRINCIPAL
+# ----------------------------------------------------------------------
+
+def show_cadastrar_pericia():
     st.header("📝 Cadastrar Nova Perícia")
     
     with st.form("form_pericia"):
@@ -437,10 +834,8 @@ if menu == "📝 Cadastrar Perícia":
                 
                 pericia_id = adicionar_pericia(dados)
                 st.success(f"✅ Perícia cadastrada com sucesso! ID: {pericia_id}")
-                st.info("💡 Acesse 'Listar Perícias' para adicionar entrevistas e gerenciar a perícia.")
 
-# LISTAR PERÍCIAS
-elif menu == "📊 Listar Perícias":
+def show_listar_pericias():
     st.header("📊 Perícias Cadastradas")
     
     # Filtros
@@ -450,7 +845,15 @@ elif menu == "📊 Listar Perícias":
         filtro_status = st.selectbox("Filtrar por Status", ["Todos", "Aberto", "Em Revisão", "Entregue", "Recebida"])
     
     with col2:
-        varas_unicas = ["Todas", "1VF", "2VF", "3VF"]
+        # Tenta obter varas únicas do DB do usuário
+        try:
+            conn = get_pericias_conn()
+            varas_db = pd.read_sql_query("SELECT DISTINCT vara FROM pericias", conn)['vara'].tolist()
+            conn.close()
+            varas_unicas = ["Todas"] + sorted(varas_db)
+        except:
+            varas_unicas = ["Todas", "1VF", "2VF", "3VF"]
+
         filtro_vara = st.selectbox("Filtrar por Vara", varas_unicas)
     
     with col3:
@@ -547,7 +950,7 @@ elif menu == "📊 Listar Perícias":
                     st.markdown("---")
                     st.subheader("💰 Registrar como Recebida")
                     with st.form(f"form_status_recebida_{row['id']}"):
-                        valor_rec = st.number_input("Valor Recebido (R$) *", min_value=0.0, value=row['valor_previsto'], step=100.0)
+                        valor_rec = st.number_input("Valor Recebido (R$)", min_value=0.0, value=row['valor_previsto'], step=100.0)
                         
                         col_sr1, col_sr2 = st.columns(2)
                         with col_sr1:
@@ -590,7 +993,7 @@ elif menu == "📊 Listar Perícias":
                     st.markdown("---")
                     st.subheader("💰 Registrar Pagamento")
                     with st.form(f"form_pagamento_{row['id']}"):
-                        valor_recebido = st.number_input("Valor Recebido (R$) *", min_value=0.0, value=row['valor_previsto'], step=100.0)
+                        valor_recebido = st.number_input("Valor Recebido (R$)", min_value=0.0, value=row['valor_previsto'], step=100.0)
                         
                         col_pag1, col_pag2 = st.columns(2)
                         with col_pag1:
@@ -651,8 +1054,7 @@ elif menu == "📊 Listar Perícias":
                         else:
                             st.error("Preencha todos os campos!")
 
-# PRÓXIMAS ENTREVISTAS
-elif menu == "📅 Próximas Entrevistas":
+def show_proximas_entrevistas():
     st.header("📅 Próximas Entrevistas Agendadas")
     
     df_entrevistas_pendentes = obter_proximas_entrevistas()
@@ -773,12 +1175,15 @@ elif menu == "📅 Próximas Entrevistas":
     
     # Legenda (Atualizada para refletir a lógica de entrevista)
     st.markdown("---")
-    st.markdown("**Legenda (Calendário de Entrevistas):**")
+    # **Ajuste 1:** Título da legenda sem os **
+    st.markdown("<div class='legenda-compacta'>**Legenda (Calendário de Entrevistas):**</div>", unsafe_allow_html=True)
+    
     col_leg1, col_leg2 = st.columns(2)
     with col_leg1:
-        st.markdown("<div class='st-emotion-cache-16ffz9z'>🟡 Pendente</div>", unsafe_allow_html=True)
+        # Aplicando a classe customizada ao markdown para anular o espaçamento
+        st.markdown("<div class='legenda-compacta'>🟡 Pendente</div>", unsafe_allow_html=True)
     with col_leg2:
-        st.markdown("<div class='st-emotion-cache-16ffz9z'>✓ Concluída</div>", unsafe_allow_html=True)
+        st.markdown("<div class='legenda-compacta'>✓ Concluída</div>", unsafe_allow_html=True)
     
     st.markdown("---")
     
@@ -827,8 +1232,7 @@ elif menu == "📅 Próximas Entrevistas":
             
             st.markdown("---")
 
-# RESUMO FINANCEIRO
-elif menu == "💰 Resumo Financeiro":
+def show_resumo_financeiro():
     st.header("💰 Resumo Financeiro")
     
     df_pericias = listar_pericias()
@@ -955,3 +1359,76 @@ elif menu == "💰 Resumo Financeiro":
                     st.metric("Pendente", f"R$ {pendente:,.2f}")
                 
                 st.markdown("---")
+
+
+# ----------------------------------------------------------------------
+# 8. ESTRUTURA PRINCIPAL DE ROTEAMENTO
+# ----------------------------------------------------------------------
+
+# Inicializa o DB de usuários (cria a tabela e o admin)
+init_user_db()
+
+
+if not st.session_state.logged_in:
+    # --- TELAS DE AUTENTICAÇÃO ---
+    if st.session_state.current_menu == "Login":
+        show_login_page()
+    elif st.session_state.current_menu == "CreateUser":
+        show_create_user_page()
+    elif st.session_state.current_menu == "ForgotPassword":
+        show_forgot_password_page()
+    elif st.session_state.current_menu == "ForcedPasswordChange":
+        show_forced_password_change()
+
+else:
+    # Verifica se a senha deve ser alterada (para forçar o fluxo de admin reset)
+    if st.session_state.must_change_password:
+        show_forced_password_change()
+    
+    else:
+        # --- DASHBOARD/SISTEMA LOGADO ---
+        
+        # Cabeçalho e Logout
+        col_title, col_user, col_version = st.columns([5, 1.5, 0.5])
+        with col_title:
+            st.markdown('<p class="main-header">📋 Sistema de Gestão de Perícias</p>', unsafe_allow_html=True)
+        with col_user:
+            st.sidebar.markdown(f"**Usuário:** {st.session_state.user_email}")
+            # Botão de logout usa a função corrigida
+            st.sidebar.button("🔒 Sair", on_click=logout, use_container_width=True)
+        with col_version:
+            st.markdown(f'<span class="version-badge">{VERSAO_SISTEMA}</span>', unsafe_allow_html=True)
+
+        st.markdown("---")
+
+        # Menu lateral
+        st.sidebar.markdown("### 📌 Menu Principal")
+        
+        menu_options = ["📝 Cadastrar Perícia", "📊 Listar Perícias", "📅 Próximas Entrevistas", "💰 Resumo Financeiro"]
+
+        if st.session_state.user_type == 'admin':
+            menu_options.append("👑 Painel Admin")
+
+        menu = st.sidebar.selectbox(
+            "Navegação",
+            menu_options,
+            label_visibility="collapsed"
+        )
+
+        st.sidebar.markdown("---")
+        st.sidebar.markdown(f"**ID:** {st.session_state.user_id} | **Tipo:** {st.session_state.user_type.capitalize()}")
+        st.sidebar.markdown("**Desenvolvido com** ❤️")
+
+        # Roteamento do Conteúdo Principal
+        if menu == "📝 Cadastrar Perícia":
+            show_cadastrar_pericia()
+        elif menu == "📊 Listar Perícias":
+            show_listar_pericias()
+        elif menu == "📅 Próximas Entrevistas":
+            show_proximas_entrevistas()
+        elif menu == "💰 Resumo Financeiro":
+            show_resumo_financeiro()
+        elif menu == "👑 Painel Admin":
+            show_admin_dashboard()
+        
+        st.session_state.current_menu = menu
