@@ -42,7 +42,6 @@ st.markdown("""
         font-weight: bold;
     }
     .stExpander {
-        background-color: #f8f9fa;
         border-radius: 10px;
         border: 1px solid #dee2e6;
     }
@@ -321,7 +320,6 @@ with col_version:
 st.markdown("---")
 
 # Menu lateral
-st.sidebar.image("https://via.placeholder.com/300x80/1f77b4/ffffff?text=Perícias+Manager", use_container_width=True)
 st.sidebar.markdown("### 📌 Menu Principal")
 
 menu = st.sidebar.selectbox(
@@ -610,44 +608,166 @@ elif menu == "📅 Próximas Entrevistas":
     # Calendário
     st.subheader("📆 Calendário de Entrevistas")
     
-    col_cal1, col_cal2 = st.columns(2)
-    with col_cal1:
-        mes_selecionado = st.selectbox("Mês", list(range(1, 13)), index=datetime.now().month - 1, format_func=lambda x: calendar.month_name[x])
-    with col_cal2:
-        ano_selecionado = st.selectbox("Ano", list(range(2024, 2031)), index=datetime.now().year - 2024)
+    # Inicializar estado do calendário
+    if 'cal_mes' not in st.session_state:
+        st.session_state.cal_mes = datetime.now().month
+    if 'cal_ano' not in st.session_state:
+        st.session_state.cal_ano = datetime.now().year
+    
+    # Controles de navegação - reorganizados
+    col_mes, col_ano, col_hoje = st.columns([2, 2, 2])
+    
+    with col_mes:
+        mes_novo = st.selectbox(
+            "Mês",
+            list(range(1, 13)),
+            index=st.session_state.cal_mes - 1,
+            format_func=lambda x: calendar.month_name[x],
+            key="select_mes"
+        )
+        if mes_novo != st.session_state.cal_mes:
+            st.session_state.cal_mes = mes_novo
+            st.rerun()
+    
+    with col_ano:
+        ano_novo = st.selectbox(
+            "Ano",
+            list(range(2020, 2035)),
+            index=st.session_state.cal_ano - 2020,
+            key="select_ano"
+        )
+        if ano_novo != st.session_state.cal_ano:
+            st.session_state.cal_ano = ano_novo
+            st.rerun()
+    
+    with col_hoje:
+        if st.button("📅 Hoje", use_container_width=True, type="primary"):
+            st.session_state.cal_mes = datetime.now().month
+            st.session_state.cal_ano = datetime.now().year
+            st.rerun()
     
     # Obter entrevistas do mês
-    df_entrevistas_mes = obter_entrevistas_mes(ano_selecionado, mes_selecionado)
+    df_entrevistas_mes = obter_entrevistas_mes(st.session_state.cal_ano, st.session_state.cal_mes)
     
-    # Criar calendário visual
-    cal = calendar.monthcalendar(ano_selecionado, mes_selecionado)
+    # Criar calendário visual compacto
+    cal = calendar.monthcalendar(st.session_state.cal_ano, st.session_state.cal_mes)
     dias_semana = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom']
     
-    # Cabeçalho do calendário
-    cols_header = st.columns(7)
-    for idx, dia in enumerate(dias_semana):
-        with cols_header[idx]:
-            st.markdown(f"**{dia}**")
+    # CSS para calendário compacto com tamanhos uniformes
+    st.markdown("""
+    <style>
+        .cal-container {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 15px 0;
+        }
+        .cal-nav-btn {
+            font-size: 2rem;
+            cursor: pointer;
+            user-select: none;
+            color: #1f77b4;
+            font-weight: bold;
+        }
+        .cal-nav-btn:hover {
+            color: #0d5a8f;
+        }
+        .cal-grid {
+            flex-grow: 1;
+        }
+        .cal-header {
+            text-align: center;
+            font-weight: bold;
+            padding: 8px;
+            background-color: #1f77b4;
+            color: white;
+            border-radius: 5px;
+            font-size: 0.9rem;
+            margin-bottom: 5px;
+        }
+        .cal-day {
+            text-align: center;
+            padding: 12px 8px;
+            border-radius: 5px;
+            font-size: 0.95rem;
+            min-height: 60px;
+            max-height: 60px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            margin: 2px 0;
+        }
+        .cal-day-empty {
+            background-color: transparent;
+            color: transparent;
+            visibility: hidden;
+        }
+        .cal-day-normal {
+            background-color: rgba(150, 150, 150, 0.15);
+            color: #888;
+            border: 1px solid rgba(150, 150, 150, 0.25);
+        }
+        .cal-day-event {
+            font-weight: bold;
+            color: white;
+            border: 2px solid rgba(255, 255, 255, 0.4);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+        .cal-day-event small {
+            font-size: 0.75rem;
+            margin-top: 2px;
+        }
+    </style>
+    """, unsafe_allow_html=True)
     
-    # Dias do calendário
-    for semana in cal:
-        cols = st.columns(7)
-        for idx, dia in enumerate(semana):
-            with cols[idx]:
-                if dia == 0:
-                    st.markdown("")
-                else:
-                    # Verificar se há entrevistas neste dia
-                    data_busca = f"{ano_selecionado}-{str(mes_selecionado).zfill(2)}-{str(dia).zfill(2)}"
-                    entrevistas_dia = df_entrevistas_mes[df_entrevistas_mes['data_entrevista'] == data_busca]
-                    
-                    if len(entrevistas_dia) > 0:
-                        # Cor baseada no status da perícia
-                        status_pericia = entrevistas_dia.iloc[0]['status_pericia']
-                        cor_dia = get_status_color(status_pericia)
-                        st.markdown(f"<div style='background-color:{cor_dia}; padding:10px; border-radius:5px; text-align:center; color:white; font-weight:bold'>{dia}<br>📅 {len(entrevistas_dia)}</div>", unsafe_allow_html=True)
+    # Container com setas laterais
+    col_prev_arrow, col_calendar, col_next_arrow = st.columns([0.5, 10, 0.5])
+    
+    with col_prev_arrow:
+        if st.button("◀", key="prev_month", use_container_width=True, help="Mês anterior"):
+            if st.session_state.cal_mes == 1:
+                st.session_state.cal_mes = 12
+                st.session_state.cal_ano -= 1
+            else:
+                st.session_state.cal_mes -= 1
+            st.rerun()
+    
+    with col_calendar:
+        # Cabeçalho do calendário
+        cols_header = st.columns(7)
+        for idx, dia in enumerate(dias_semana):
+            with cols_header[idx]:
+                st.markdown(f"<div class='cal-header'>{dia}</div>", unsafe_allow_html=True)
+        
+        # Dias do calendário
+        for semana in cal:
+            cols = st.columns(7)
+            for idx, dia in enumerate(semana):
+                with cols[idx]:
+                    if dia == 0:
+                        st.markdown("<div class='cal-day cal-day-empty'>0</div>", unsafe_allow_html=True)
                     else:
-                        st.markdown(f"<div style='padding:10px; text-align:center; color:#888'>{dia}</div>", unsafe_allow_html=True)
+                        # Verificar se há entrevistas neste dia
+                        data_busca = f"{st.session_state.cal_ano}-{str(st.session_state.cal_mes).zfill(2)}-{str(dia).zfill(2)}"
+                        entrevistas_dia = df_entrevistas_mes[df_entrevistas_mes['data_entrevista'] == data_busca]
+                        
+                        if len(entrevistas_dia) > 0:
+                            # Cor baseada no status da perícia
+                            status_pericia = entrevistas_dia.iloc[0]['status_pericia']
+                            cor_dia = get_status_color(status_pericia)
+                            st.markdown(f"<div class='cal-day cal-day-event' style='background-color:{cor_dia}'><strong>{dia}</strong><br><small>{len(entrevistas_dia)} 📅</small></div>", unsafe_allow_html=True)
+                        else:
+                            st.markdown(f"<div class='cal-day cal-day-normal'>{dia}</div>", unsafe_allow_html=True)
+    
+    with col_next_arrow:
+        if st.button("▶", key="next_month", use_container_width=True, help="Próximo mês"):
+            if st.session_state.cal_mes == 12:
+                st.session_state.cal_mes = 1
+                st.session_state.cal_ano += 1
+            else:
+                st.session_state.cal_mes += 1
+            st.rerun()
     
     # Legenda
     st.markdown("---")

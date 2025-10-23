@@ -1,21 +1,11 @@
-📝 Resumo do Sistema Criado
-Nome: Sistema de Gestão de Perícias
-Tecnologias: Python + Streamlit + SQLite
-Localização: Desktop/sistema-pericias/
-Arquivos importantes:
+Alguns pontos para ajuste:
 
-app.py - Código principal
-pericias.db - Banco de dados (backup obrigatório!)
+Os itens "Mes - Ano - Hoje" em "Calendário de entrevistas" ficaram desalinhados.
 
-Para executar:
-bashcd Desktop/sistema-pericias
-streamlit run app.py
-Funcionalidades:
+Colocar os meses em pt-BR.
 
-✅ Cadastro de perícias (Vara, Processo, Classe, Datas, Valores)
-✅ Gestão de Status (Aberto, Em Revisão, Entregue, Recebida)
-✅ Entrevistas com status (Pendente/Realizada)
-✅ Calendário de próximas entrevistas
-✅ Resumo financeiro
-✅ Cálculo automático de prazo restante
-✅ Todas as datas em formato DD/MM/YYYY
+Os ícones dentro das datas agendadas estão desalinhados, ficando muito próximos da borda inferior quase saindo da célula.
+
+As setinhas para avançar ou retroceder os meses não estão funcionando.
+
+https://sistemas-pericia-cxs.streamlit.app/
