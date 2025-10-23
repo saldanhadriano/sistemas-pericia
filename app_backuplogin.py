@@ -7,13 +7,6 @@ import plotly.express as px
 import plotly.graph_objects as go
 import shortuuid      # Para gerar tokens (pip install shortuuid)
 import bcrypt         # Para hash de senhas (pip install bcrypt)
-import os
-import io
-
-# --- NOVAS BIBLIOTECAS PARA PYDRIVE2 SYNC ---
-# Requer: pip install pydrive2
-from pydrive2.auth import GoogleAuth
-from pydrive2.drive import GoogleDrive
 
 # ----------------------------------------------------------------------
 # 1. CONFIGURAÇÕES E UTILITÁRIOS GLOBAIS
@@ -28,7 +21,7 @@ st.set_page_config(
 )
 
 # Versão do sistema
-VERSAO_SISTEMA = "v4.6 (Drive Sync)" 
+VERSAO_SISTEMA = "v4.4 (Multiusuário)" # Versão corrigida
 
 # Dicionário de tradução para os meses
 NOMES_MESES_PT_BR = {
@@ -49,22 +42,7 @@ if 'user_type' not in st.session_state:
 if 'current_menu' not in st.session_state:
     st.session_state.current_menu = "Login"
 
-# Constante para nome do arquivo de backup no Drive
-DRIVE_BACKUP_FILENAME = "Pericias_Backup_Data.csv" 
-DRIVE_BACKUP_MIMETYPE = 'text/csv'
-
-# --- Configuração básica PyDrive2 (necessária para autenticação) ---
-# PyDrive2 procura por um arquivo settings.yaml. Vamos simular/garantir a configuração
-if not os.path.exists('settings.yaml'):
-    with open('settings.yaml', 'w') as f:
-        f.write('client_config_file: null\n')
-        f.write('save_credentials: true\n')
-        f.write('save_credentials_backend: file\n')
-        f.write('oauth_scope:\n')
-        f.write('  - https://www.googleapis.com/auth/drive.file\n')
-        f.write('  - https://www.googleapis.com/auth/drive.appfolder\n')
-
-# CSS personalizado (Mantido)
+# CSS personalizado para melhorar o design (Mantido)
 st.markdown("""
 <style>
     .main-header {
@@ -141,16 +119,18 @@ st.markdown("""
     
     /* CLASSE CUSTOMIZADA PARA COMPACTAR A LEGENDA */
     div.legenda-compacta {
+        /* Define um padding vertical pequeno para descolar o texto (Ajuste 2) */
         padding-top: 3px !important; 
         padding-bottom: 3px !important;
         margin: 0;
         line-height: initial; 
     }
     
-    /* Tentativas de aplicação de margem negativa para reduzir o espaço da legenda */
+    /* Tentativas de aplicação de margem negativa para reduzir o espaço entre as linhas divisórias e a legenda */
+    /* Container do Título */
     div[data-testid="stMarkdownContainer"]:has(.legenda-compacta) {
-        margin-top: -10px !important;
-        margin-bottom: -10px !important;
+        margin-top: -10px !important; /* Puxa para perto da linha superior */
+        margin-bottom: -10px !important; /* Puxa para perto dos itens */
         padding: 0 !important;
     }
     
@@ -190,7 +170,7 @@ def init_user_db():
     conn = get_user_conn()
     c = conn.cursor()
     
-    # Tabela de Usuários (Ajustada para o PyDrive2)
+    # Tabela de Usuários
     c.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -198,11 +178,9 @@ def init_user_db():
             sobrenome TEXT,
             email TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
-            recovery_token TEXT,             
-            must_change_password BOOLEAN DEFAULT 0, 
-            tipo_usuario TEXT DEFAULT 'normal',
-            drive_file_id TEXT,               -- ID do arquivo de backup no Google Drive
-            has_creds BOOLEAN DEFAULT 0       -- Se o usuário já autenticou com o Drive
+            recovery_token TEXT,             -- Token único para recuperação de senha
+            must_change_password BOOLEAN DEFAULT 0, -- Obriga a troca de senha no próximo login
+            tipo_usuario TEXT DEFAULT 'normal' -- 'normal', 'admin'
         )
     ''')
     
@@ -214,6 +192,7 @@ def init_user_db():
     if c.fetchone() is None:
         hashed_password = hash_password(admin_password)
         
+        # O Admin não precisa de token de recuperação, mas precisa de uma senha inicial
         c.execute('''
             INSERT INTO users (nome, sobrenome, email, password_hash, tipo_usuario)
             VALUES (?, ?, ?, ?, ?)
@@ -277,7 +256,7 @@ def init_pericia_db(user_id):
     conn.close()
 
 # ----------------------------------------------------------------------
-# 4. FUNÇÕES CRUD DE PERÍCIAS (AJUSTADAS PARA ISOLAMENTO E SYNC)
+# 4. FUNÇÕES CRUD DE PERÍCIAS (AJUSTADAS PARA ISOLAMENTO)
 # ----------------------------------------------------------------------
 
 def get_pericias_conn():
@@ -286,162 +265,6 @@ def get_pericias_conn():
         raise PermissionError("Usuário não logado ou ID inválido.")
     db_name = get_pericias_db_name(st.session_state.user_id)
     return sqlite3.connect(db_name)
-
-# --- FUNÇÕES DE SINCRONIZAÇÃO PYDRIVE2 ---
-
-def get_drive_service():
-    """Autentica com o Google Drive usando o token.json local."""
-    try:
-        gauth = GoogleAuth()
-        # Tenta carregar as credenciais (token.json)
-        gauth.LoadCredentialsFile(f'drive_creds_user_{st.session_state.user_id}.json')
-        
-        # Se as credenciais expiraram ou não existem, tenta re-autenticar (requer interação)
-        if gauth.credentials is None:
-            # Esta parte só funciona bem em ambiente local/CLI
-            gauth.LocalWebserverAuth()
-        elif gauth.access_token_expired:
-            gauth.Refresh()
-        else:
-            gauth.Authorize()
-        
-        # Salva o token atualizado para persistência
-        gauth.SaveCredentialsFile(f'drive_creds_user_{st.session_state.user_id}.json')
-        
-        return GoogleDrive(gauth)
-        
-    except Exception as e:
-        st.error(f"Erro de autenticação com o Google Drive. Tente reconfigurar: {e}")
-        return None
-
-def sync_to_drive():
-    """Exporta o DB local para o Google Drive como um arquivo CSV único."""
-    user_id = st.session_state.user_id
-    
-    # 1. Obter ID do arquivo Drive (se existir)
-    conn_user = get_user_conn()
-    c_user = conn_user.cursor()
-    c_user.execute("SELECT drive_file_id, has_creds FROM users WHERE id = ?", (user_id,))
-    file_id, has_creds = c_user.fetchone()
-    conn_user.close()
-
-    if not has_creds:
-        return False # Não sincroniza se não estiver configurado
-
-    # 2. Obter serviço Drive
-    drive = get_drive_service()
-    if drive is None: return False
-
-    try:
-        # A. Combina dados de perícias e entrevistas em um único DataFrame para CSV
-        conn_pericia = get_pericias_conn()
-        df_pericias = pd.read_sql_query("SELECT * FROM pericias", conn_pericia)
-        df_entrevistas = pd.read_sql_query("SELECT * FROM entrevistas", conn_pericia)
-        conn_pericia.close()
-        
-        # Cria um buffer para armazenar os dados no formato CSV (Perícias e Entrevistas)
-        csv_buffer = io.StringIO()
-        csv_buffer.write("--- PERICIAS ---\n")
-        df_pericias.to_csv(csv_buffer, index=False, mode='a')
-        csv_buffer.write("\n--- ENTREVISTAS ---\n")
-        df_entrevistas.to_csv(csv_buffer, index=False, mode='a')
-        
-        # Salva o buffer em um arquivo temporário
-        temp_filename = f'temp_backup_{user_id}.csv'
-        with open(temp_filename, 'w', encoding='utf-8') as f:
-            f.write(csv_buffer.getvalue())
-
-        # B. Upload para o Drive
-        if file_id:
-            # Arquivo já existe, atualiza
-            file_drive = drive.CreateFile({'id': file_id})
-            file_drive.SetContentFile(temp_filename)
-            file_drive.Upload()
-        else:
-            # Arquivo não existe, cria um novo
-            file_drive = drive.CreateFile({'title': f'{st.session_state.user_email}_{DRIVE_BACKUP_FILENAME}', 
-                                            'mimeType': DRIVE_BACKUP_MIMETYPE})
-            file_drive.SetContentFile(temp_filename)
-            file_drive.Upload()
-            
-            # Atualiza o DB central com o novo ID do arquivo
-            conn_user = get_user_conn()
-            c_user = conn_user.cursor()
-            c_user.execute("UPDATE users SET drive_file_id = ? WHERE id = ?", (file_drive['id'], user_id))
-            conn_user.commit()
-            conn_user.close()
-            
-            st.session_state.drive_file_id = file_drive['id'] # Atualiza estado
-            file_id = file_drive['id']
-        
-        # C. Limpeza
-        os.remove(temp_filename)
-        return True
-
-    except Exception as e:
-        # st.error(f"Erro ao sincronizar com Google Drive: {e}")
-        return False
-
-def restore_from_drive():
-    """Restaura dados do Google Drive para o DB local."""
-    user_id = st.session_state.user_id
-    
-    # 1. Obter ID do arquivo
-    conn_user = get_user_conn()
-    c_user = conn_user.cursor()
-    c_user.execute("SELECT drive_file_id FROM users WHERE id = ?", (user_id,))
-    file_id = c_user.fetchone()[0]
-    conn_user.close()
-
-    if not file_id:
-        st.error("Nenhum arquivo de backup encontrado no seu registro.")
-        return False
-
-    drive = get_drive_service()
-    if drive is None: return False
-    
-    try:
-        # A. Baixar arquivo
-        file_drive = drive.CreateFile({'id': file_id})
-        temp_filename = f'temp_restore_{user_id}.csv'
-        file_drive.GetContentFile(temp_filename, mimetype=DRIVE_BACKUP_MIMETYPE)
-        
-        # B. Ler dados do arquivo baixado
-        with open(temp_filename, 'r', encoding='utf-8') as f:
-            content = f.read()
-        
-        # C. Separar Perícias e Entrevistas (usando o separador '---')
-        sections = content.split('--- ENTREVISTAS ---')
-        pericias_csv = sections[0].replace('--- PERICIAS ---', '').strip()
-        entrevistas_csv = sections[1].strip() if len(sections) > 1 else ""
-
-        # D. Converter para DataFrame
-        df_pericias = pd.read_csv(io.StringIO(pericias_csv))
-        df_entrevistas = pd.read_csv(io.StringIO(entrevistas_csv)) if entrevistas_csv else pd.DataFrame()
-        
-        # E. Recria o DB Local
-        db_name = get_pericias_db_name(user_id)
-        if os.path.exists(db_name):
-            os.remove(db_name)
-        init_pericia_db(user_id)
-        conn = sqlite3.connect(db_name)
-        
-        # F. Inserir dados
-        df_pericias.to_sql('pericias', conn, if_exists='append', index=False)
-        if not df_entrevistas.empty:
-             df_entrevistas.to_sql('entrevistas', conn, if_exists='append', index=False)
-             
-        conn.close()
-        os.remove(temp_filename)
-        return True
-        
-    except Exception as e:
-        st.error(f"Erro ao restaurar dados do Google Drive: {e}")
-        if os.path.exists(temp_filename): os.remove(temp_filename)
-        return False
-
-
-# --- Funções CRUD Modificadas para Chamar sync_to_drive() ---
 
 def adicionar_pericia(dados):
     conn = get_pericias_conn()
@@ -455,8 +278,6 @@ def adicionar_pericia(dados):
     conn.commit()
     pericia_id = c.lastrowid
     conn.close()
-    
-    sync_to_drive() # Sincroniza após a escrita
     return pericia_id
 
 def adicionar_entrevista(pericia_id, data, hora, nome):
@@ -468,72 +289,7 @@ def adicionar_entrevista(pericia_id, data, hora, nome):
     ''', (pericia_id, data, hora, nome))
     conn.commit()
     conn.close()
-    
-    sync_to_drive() # Sincroniza após a escrita
 
-def excluir_pericia(pericia_id):
-    conn = get_pericias_conn()
-    c = conn.cursor()
-    c.execute("DELETE FROM pericias WHERE id = ?", (pericia_id,))
-    conn.commit()
-    conn.close()
-    sync_to_drive() # Sincroniza após a escrita
-
-def atualizar_status_entrevista(entrevista_id, novo_status):
-    conn = get_pericias_conn()
-    c = conn.cursor()
-    c.execute("UPDATE entrevistas SET status = ? WHERE id = ?", (novo_status, entrevista_id))
-    conn.commit()
-    conn.close()
-    sync_to_drive() # Sincroniza após a escrita
-
-def atualizar_status_pericia(pericia_id, novo_status):
-    conn = get_pericias_conn()
-    c = conn.cursor()
-    c.execute("UPDATE pericias SET status = ? WHERE id = ?", (novo_status, pericia_id))
-    conn.commit()
-    conn.close()
-    sync_to_drive() # Sincroniza após a escrita
-
-def finalizar_pericia(pericia_id, data_entrega, valor_recebido):
-    conn = get_pericias_conn()
-    c = conn.cursor()
-    
-    if valor_recebido > 0:
-        novo_status = "Recebida"
-    else:
-        novo_status = "Entregue"
-    
-    c.execute('''
-        UPDATE pericias 
-        SET data_entrega_laudo = ?, valor_recebido = ?, status = ?
-        WHERE id = ?
-    ''', (data_entrega, valor_recebido, novo_status, pericia_id))
-    conn.commit()
-    conn.close()
-    sync_to_drive() # Sincroniza após a escrita
-
-def atualizar_valor_recebido(pericia_id, valor_recebido):
-    conn = get_pericias_conn()
-    c = conn.cursor()
-    c.execute('''
-        UPDATE pericias 
-        SET valor_recebido = ?, status = 'Recebida'
-        WHERE id = ?
-    ''', (valor_recebido, pericia_id))
-    conn.commit()
-    conn.close()
-    sync_to_drive() # Sincroniza após a escrita
-
-def excluir_entrevista(entrevista_id):
-    conn = get_pericias_conn()
-    c = conn.cursor()
-    c.execute("DELETE FROM entrevistas WHERE id = ?", (entrevista_id,))
-    conn.commit()
-    conn.close()
-    sync_to_drive() # Sincroniza após a escrita
-
-# --- Funções de Leitura (sem Sync) ---
 def listar_pericias(filtro_status=None, filtro_vara=None, busca_processo=None):
     conn = get_pericias_conn()
     query = "SELECT * FROM pericias WHERE 1=1"
@@ -592,6 +348,62 @@ def obter_entrevistas_mes(ano, mes):
     df = pd.read_sql_query(query, conn, params=(str(ano), str(mes).zfill(2)))
     conn.close()
     return df
+
+def excluir_pericia(pericia_id):
+    conn = get_pericias_conn()
+    c = conn.cursor()
+    c.execute("DELETE FROM pericias WHERE id = ?", (pericia_id,))
+    conn.commit()
+    conn.close()
+
+def atualizar_status_entrevista(entrevista_id, novo_status):
+    conn = get_pericias_conn()
+    c = conn.cursor()
+    c.execute("UPDATE entrevistas SET status = ? WHERE id = ?", (novo_status, entrevista_id))
+    conn.commit()
+    conn.close()
+
+def atualizar_status_pericia(pericia_id, novo_status):
+    conn = get_pericias_conn()
+    c = conn.cursor()
+    c.execute("UPDATE pericias SET status = ? WHERE id = ?", (novo_status, pericia_id))
+    conn.commit()
+    conn.close()
+
+def finalizar_pericia(pericia_id, data_entrega, valor_recebido):
+    conn = get_pericias_conn()
+    c = conn.cursor()
+    
+    if valor_recebido > 0:
+        novo_status = "Recebida"
+    else:
+        novo_status = "Entregue"
+    
+    c.execute('''
+        UPDATE pericias 
+        SET data_entrega_laudo = ?, valor_recebido = ?, status = ?
+        WHERE id = ?
+    ''', (data_entrega, valor_recebido, novo_status, pericia_id))
+    conn.commit()
+    conn.close()
+
+def atualizar_valor_recebido(pericia_id, valor_recebido):
+    conn = get_pericias_conn()
+    c = conn.cursor()
+    c.execute('''
+        UPDATE pericias 
+        SET valor_recebido = ?, status = 'Recebida'
+        WHERE id = ?
+    ''', (valor_recebido, pericia_id))
+    conn.commit()
+    conn.close()
+
+def excluir_entrevista(entrevista_id):
+    conn = get_pericias_conn()
+    c = conn.cursor()
+    c.execute("DELETE FROM entrevistas WHERE id = ?", (entrevista_id,))
+    conn.commit()
+    conn.close()
 
 def obter_dados_financeiros_mes():
     conn = get_pericias_conn()
@@ -908,76 +720,8 @@ def show_forced_password_change():
 
 
 # ----------------------------------------------------------------------
-# 6. FUNÇÕES DO PAINEL ADMIN E CONFIGURAÇÃO
+# 6. FUNÇÕES DO PAINEL ADMIN
 # ----------------------------------------------------------------------
-
-def update_user_drive_info(user_id, file_id=None, has_creds=True):
-    """Atualiza o ID do arquivo do Drive e o status das credenciais no DB central."""
-    conn = get_user_conn()
-    c = conn.cursor()
-    c.execute("UPDATE users SET drive_file_id = ?, has_creds = ? WHERE id = ?", 
-              (file_id, has_creds, user_id))
-    conn.commit()
-    conn.close()
-
-def show_sync_config_page():
-    st.header("⚙️ Configuração de Sincronização Google Drive")
-    st.info("""
-        Esta tela configura o backup/restauração dos seus dados para sua conta Google Drive.
-        
-        **Atenção:** Você precisará autenticar o sistema no seu navegador na primeira vez.
-        *Isso gera um arquivo local `drive_creds_user_[ID].json`.*
-    """)
-
-    user_id = st.session_state.user_id
-    
-    # Obter info atual
-    conn = get_user_conn()
-    c = conn.cursor()
-    c.execute("SELECT drive_file_id, has_creds FROM users WHERE id = ?", (user_id,))
-    file_id, has_creds = c.fetchone()
-    conn.close()
-
-    # --- 1. Autenticação (Ação Única) ---
-    st.subheader("1. Autenticação e Sincronização Inicial")
-    
-    if has_creds:
-        st.success("Sistema já autenticado com o Google Drive.")
-    else:
-        st.warning("Autenticação com o Google Drive pendente.")
-        if st.button("Iniciar Autenticação Google Drive", type="primary", use_container_width=True):
-            # A chamada a get_drive_service() irá iniciar o fluxo de autenticação
-            drive_service = get_drive_service()
-            if drive_service:
-                # Se autenticou com sucesso, salvamos o status
-                update_user_drive_info(user_id, file_id, has_creds=True)
-                st.success("✅ Autenticação concluída! O token foi salvo localmente.")
-                st.rerun()
-
-    if has_creds and not file_id:
-        st.markdown("---")
-        st.subheader("2. Criar Arquivo de Backup no Drive")
-        st.info(f"O arquivo de backup será chamado **{st.session_state.user_email}_{DRIVE_BACKUP_FILENAME}**.")
-        
-        if st.button("Criar Primeiro Backup", use_container_width=True):
-            if sync_to_drive():
-                st.success("✅ Backup inicial criado com sucesso no seu Google Drive!")
-                st.rerun()
-            else:
-                st.error("❌ Falha ao criar o arquivo. Verifique as permissões.")
-
-    # --- 3. Restauração (Se já houver um arquivo ID) ---
-    if file_id:
-        st.markdown("---")
-        st.subheader("3. Restaurar Dados (Importar)")
-        st.warning(f"ATENÇÃO: A restauração apagará todos os dados locais e os substituirá pelo conteúdo do arquivo (ID: `{file_id}`).")
-        
-        if st.button("⬇️ Restaurar Dados do Google Drive", use_container_width=True):
-            if restore_from_drive():
-                st.success("✅ Restauração concluída! O banco de dados local foi atualizado.")
-                st.rerun()
-            else:
-                st.error("❌ Falha na Restauração. Verifique o log de erros acima.")
 
 def show_admin_dashboard():
     if st.session_state.user_type != 'admin':
@@ -989,12 +733,12 @@ def show_admin_dashboard():
     st.markdown("---")
 
     conn = get_user_conn()
-    df_users = pd.read_sql_query("SELECT id, nome, sobrenome, email, tipo_usuario, drive_file_id FROM users", conn)
+    df_users = pd.read_sql_query("SELECT id, nome, sobrenome, email, tipo_usuario FROM users", conn)
     conn.close()
     
     st.subheader(f"Usuários Registrados: {len(df_users)}")
 
-    # Exibir tabela de usuários (incluindo o ID do arquivo Drive)
+    # Exibir tabela de usuários
     st.dataframe(df_users, use_container_width=True, hide_index=True)
 
     # Gerenciamento de Senha Provisória
@@ -1048,7 +792,7 @@ def show_admin_dashboard():
 
 
 # ----------------------------------------------------------------------
-# 7. FUNÇÕES DE EXIBIÇÃO DO CONTEÚDO PRINCIPAL (COMPLETO)
+# 7. FUNÇÕES DE EXIBIÇÃO DO CONTEÚDO PRINCIPAL
 # ----------------------------------------------------------------------
 
 def show_cadastrar_pericia():
@@ -1624,56 +1368,6 @@ def show_resumo_financeiro():
 # Inicializa o DB de usuários (cria a tabela e o admin)
 init_user_db()
 
-# --- Conteúdo do Menu Principal ---
-def main_content():
-    # Cabeçalho e Logout
-    col_title, col_user, col_version = st.columns([5, 1.5, 0.5])
-    with col_title:
-        st.markdown('<p class="main-header">📋 Sistema de Gestão de Perícias</p>', unsafe_allow_html=True)
-    with col_user:
-        st.sidebar.markdown(f"**Usuário:** {st.session_state.user_email}")
-        st.sidebar.button("🔒 Sair", on_click=logout, use_container_width=True)
-    with col_version:
-        st.markdown(f'<span class="version-badge">{VERSAO_SISTEMA}</span>', unsafe_allow_html=True)
-
-    st.markdown("---")
-
-    # Menu lateral
-    st.sidebar.markdown("### 📌 Menu Principal")
-    
-    menu_options = ["📝 Cadastrar Perícia", "📊 Listar Perícias", "📅 Próximas Entrevistas", "💰 Resumo Financeiro", "⚙️ Configuração de Sincronização"]
-
-    if st.session_state.user_type == 'admin':
-        menu_options.append("👑 Painel Admin")
-
-    menu = st.sidebar.selectbox(
-        "Navegação",
-        menu_options,
-        label_visibility="collapsed"
-    )
-
-    st.sidebar.markdown("---")
-    st.sidebar.markdown(f"**ID:** {st.session_state.user_id} | **Tipo:** {st.session_state.user_type.capitalize()}")
-    st.sidebar.markdown("**Desenvolvido com** ❤️")
-
-    # Roteamento do Conteúdo Principal
-    if menu == "📝 Cadastrar Perícia":
-        show_cadastrar_pericia()
-    elif menu == "📊 Listar Perícias":
-        show_listar_pericias()
-    elif menu == "📅 Próximas Entrevistas":
-        show_proximas_entrevistas()
-    elif menu == "💰 Resumo Financeiro":
-        show_resumo_financeiro()
-    elif menu == "👑 Painel Admin":
-        show_admin_dashboard()
-    elif menu == "⚙️ Configuração de Sincronização":
-        show_sync_config_page()
-    
-    st.session_state.current_menu = menu 
-
-
-# --- Execução do Roteamento ---
 
 if not st.session_state.logged_in:
     # --- TELAS DE AUTENTICAÇÃO ---
@@ -1692,4 +1386,49 @@ else:
         show_forced_password_change()
     
     else:
-        main_content()
+        # --- DASHBOARD/SISTEMA LOGADO ---
+        
+        # Cabeçalho e Logout
+        col_title, col_user, col_version = st.columns([5, 1.5, 0.5])
+        with col_title:
+            st.markdown('<p class="main-header">📋 Sistema de Gestão de Perícias</p>', unsafe_allow_html=True)
+        with col_user:
+            st.sidebar.markdown(f"**Usuário:** {st.session_state.user_email}")
+            # Botão de logout usa a função corrigida
+            st.sidebar.button("🔒 Sair", on_click=logout, use_container_width=True)
+        with col_version:
+            st.markdown(f'<span class="version-badge">{VERSAO_SISTEMA}</span>', unsafe_allow_html=True)
+
+        st.markdown("---")
+
+        # Menu lateral
+        st.sidebar.markdown("### 📌 Menu Principal")
+        
+        menu_options = ["📝 Cadastrar Perícia", "📊 Listar Perícias", "📅 Próximas Entrevistas", "💰 Resumo Financeiro"]
+
+        if st.session_state.user_type == 'admin':
+            menu_options.append("👑 Painel Admin")
+
+        menu = st.sidebar.selectbox(
+            "Navegação",
+            menu_options,
+            label_visibility="collapsed"
+        )
+
+        st.sidebar.markdown("---")
+        st.sidebar.markdown(f"**ID:** {st.session_state.user_id} | **Tipo:** {st.session_state.user_type.capitalize()}")
+        st.sidebar.markdown("**Desenvolvido com** ❤️")
+
+        # Roteamento do Conteúdo Principal
+        if menu == "📝 Cadastrar Perícia":
+            show_cadastrar_pericia()
+        elif menu == "📊 Listar Perícias":
+            show_listar_pericias()
+        elif menu == "📅 Próximas Entrevistas":
+            show_proximas_entrevistas()
+        elif menu == "💰 Resumo Financeiro":
+            show_resumo_financeiro()
+        elif menu == "👑 Painel Admin":
+            show_admin_dashboard()
+        
+        st.session_state.current_menu = menu

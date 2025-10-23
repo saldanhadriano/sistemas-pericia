@@ -1,0 +1,6 @@
+client_config_file: null
+save_credentials: true
+save_credentials_backend: file
+oauth_scope:
+  - https://www.googleapis.com/auth/drive.file
+  - https://www.googleapis.com/auth/drive.appfolder
